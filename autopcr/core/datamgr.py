@@ -2,7 +2,7 @@ from collections import Counter
 from .base import Component
 from .apiclient import apiclient
 from ..model.modelbase import *
-from typing import Callable, Coroutine, Any, Set, Dict, Tuple
+from typing import Callable, Coroutine, Any, Set, Dict, Tuple, Union
 import typing
 from ..model.common import *
 import datetime
@@ -171,11 +171,36 @@ class datamgr(Component[apiclient]):
         encoded_data = base64.b64encode(compressed_data).decode('utf-8')
         return encoded_data
 
-    def get_need_equip(self, start_rank: int) -> Tuple[List[Tuple[Tuple[eInventoryType, int], List[Tuple[Tuple[eInventoryType, int], int]]]], typing.Counter[Tuple[eInventoryType, int]]]:
+    def get_quest_weght(self, require_equip) -> Dict[int, Tuple[int, int]]: # weight and max demand
+        def f(x: int, pos: int):
+            wei = [0, 0.4, 0.4, 0.2]
+            return x * wei[pos]
+
+        need = {token: num - self.get_inventory(token) 
+                for token, num in require_equip.items() 
+                if num - self.get_inventory(token) > 0}
+
+        quest_weight: Dict[int, Tuple[int, int]] = {
+                quest.quest_id: 
+                    (
+                    sum(f(
+                        need.get((eInventoryType.Equip, getattr(quest, f'reward_image_{i}')), 0), i
+                    ) for i in range(1,4)),
+                    max(f(
+                        need.get((eInventoryType.Equip, getattr(quest, f'reward_image_{i}')), 0), i
+                    ) for i in range(1,4)),
+                     )
+                for quest in db.normal_quest_data.values()
+                }
+        return quest_weight
+
+    def get_need_equip(self, start_rank: Union[None, int] = None, like_unit_only: bool = False) -> Tuple[List[Tuple[Tuple[eInventoryType, int], List[Tuple[Tuple[eInventoryType, int], int]]]], typing.Counter[Tuple[eInventoryType, int]]]:
         cnt: typing.Counter[Tuple[eInventoryType, int]] = Counter()
         result: List[Tuple[Tuple[eInventoryType, int], List[Tuple[Tuple[eInventoryType, int], int]]]] = []
         for unit_id in self.unit:
             if start_rank and self.unit[unit_id].promotion_level < start_rank:
+                continue
+            if like_unit_only and not self.unit[unit_id].favorite_flag:
                 continue
             token = (eInventoryType.Unit, unit_id)
             need = self.get_need_unit_need_eqiup(unit_id)
@@ -262,9 +287,9 @@ class datamgr(Component[apiclient]):
 
     def get_shop_gold(self, shop_id: int) -> int:
         if shop_id == eSystemId.NORMAL_SHOP: # 正常商店
-            return self.gold.gold_id_free
+            return self.gold.gold_id_free + self.gold.gold_id_pay
         if shop_id == eSystemId.LIMITED_SHOP: # 限定商店
-            return self.gold.gold_id_free
+            return self.gold.gold_id_free + self.gold.gold_id_pay
         elif shop_id == eSystemId.ARENA_SHOP: # jjc店
             return self.get_inventory((eInventoryType.Item, 90003))
         elif shop_id == eSystemId.GRAND_ARENA_SHOP: # pjjc店
