@@ -17,15 +17,15 @@ async def _cron(task):
 async def task(qid, account):
     async with usermgr.load(qid, readonly=True) as accountmgr:
         async with accountmgr.load(account) as mgr:
-            _, status = await mgr.do_daily()
+            status = (await mgr.do_daily()).result_status.value
             cur = datetime.datetime.now()
             await cron_log_buffer.put(f"{db.format_time(cur)}: done cron for {qid} {account}, {status}")
 
 async def _run_crons(cur):
     print(f"doing cron check in {cur.hour} {cur.minute}")
-    for qid in usermgr.qids():
+    for qid in usermgr.qid_map():
         async with usermgr.load(qid, readonly=True) as accountmgr:
-            for account in accountmgr.accounts():
+            for account in accountmgr.accounts_map():
                 async with accountmgr.load(account, readonly=True) as acc:
                     if acc.is_cron_run(cur.hour, cur.minute):
                         asyncio.get_event_loop().create_task(task(qid, account))
