@@ -502,7 +502,7 @@ class HttpServer:
         @self.web.route("/", defaults={"path": ""})
         @self.web.route("/<path:path>")
         async def index(path):
-            if os.path.exists(os.path.join(str(self.web.static_folder), path)):
+            if os.path.exists(os.path.join(str(self.web.static_folder), path)) and path:
                 return await send_from_directory(str(self.web.static_folder), path)
             else:
                 return await send_from_directory(str(self.web.static_folder), 'index.html')
