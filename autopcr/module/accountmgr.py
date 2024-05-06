@@ -10,14 +10,14 @@ from asyncio import Lock
 # from copy import deepcopy
 from dataclasses import dataclass, field, InitVar
 from functools import wraps
-from typing import Any, Dict, Iterator, List, Union, Optional, Generator
+from typing import Any, Dict, List, Union, Optional
 
 from PIL import Image
 # from PIL import Image
 from dataclasses_json import dataclass_json
-from sqlalchemy.orm import Session
+# from sqlalchemy.orm import Session
 
-from .accdatabase import DbAccount, DbModule
+from .accdatabase import DbAccount
 from .accdatabase import instance as accdb, DbUser, DbDailyResult
 from .accdatabase import DbSingleResult
 from .modulebase import eResultStatus, ModuleResult, eModuleType
@@ -151,9 +151,8 @@ class Account(ModuleManager):
         if not result.image_path or not os.path.exists(result.image_path):
             m_name = result.db_module.module_key
             file_name = f'single_{result.single_result_id}_{m_name}_{db.format_time_safe(result.time_stamp)}.jpg'
-            img = await self.generate_image(status=result.result_status, result=
-            TaskResult(order=[m_name],
-                       result={m_name: ModuleResult.from_json(result.result_json)}))
+            img = await self.generate_image(status=result.result_status,
+                                            result=ModuleResult.from_json(result.result_json))
             file_path = os.path.join(self.qq, self.alias, 'single')
             if not os.path.exists(os.path.join(RESULT_DIR, file_path)):
                 os.makedirs(os.path.join(RESULT_DIR, file_path))
@@ -250,6 +249,9 @@ class Account(ModuleManager):
         # return results_time.get(safe_time, None)
 
     async def get_latest_daily_result(self) -> Optional[DbDailyResult]:
+        """
+        获取最新的日常结果
+        """
         # Get the latest valid DailyResult
         latest_daily_result = self.data_new.db_daily_result[0] if self.data_new.db_daily_result else None
         latest_single_time = self.data_new.db_single_result[0].time_stamp if self.data_new.db_single_result else None
@@ -265,13 +267,14 @@ class Account(ModuleManager):
 
         # 找到最新的结果，性能方面可能有问题，猪鼻不会算法
         for module in latest_daily_result.db_modules:
+            time_stamp = datetime.datetime.fromtimestamp(0)
             for sr in self.data_new.db_single_result:
-                if sr.db_module.module_type == eModuleType.DAILY and sr.module_id == module.module_id and sr.time_stamp > latest_daily_result.time_stamp:
+                if sr.module_id == module.module_id and sr.time_stamp > latest_daily_result.time_stamp and sr.time_stamp > time_stamp:
+                    time_stamp = sr.time_stamp
                     if sr.result_status == eResultStatus.ERROR:
                         result_obj.result[module.module_key] = sr.result_json
                     else:
                         result_obj.result[module.module_key] = ModuleResult.from_json(sr.result_json)
-                    break
 
         new_daily_result = DbDailyResult(
             time_stamp=datetime.datetime.now(),
@@ -280,6 +283,31 @@ class Account(ModuleManager):
         )
 
         return new_daily_result
+
+    async def get_latest_tools_result(self):
+        """
+        获取工具历史结果
+        这玩意没有全部执行，不需要时间判断
+        """
+        tool_modules = [module for module in self.modules_map.values() if module.module_type == eModuleType.TOOL]
+        result_obj = TaskResult(order=[], result={})
+        for module in tool_modules:
+            time_stamp = datetime.datetime.fromtimestamp(0)
+            for sr in self.data_new.db_single_result:
+                if sr.module_id == module.module_id and sr.time_stamp > time_stamp:
+                    time_stamp = sr.time_stamp
+                    if sr.result_status == eResultStatus.ERROR:
+                        result_obj.result[module.module_key] = sr.result_json
+                    else:
+                        result_obj.result[module.module_key] = ModuleResult.from_json(sr.result_json)
+
+        tools_result = DbDailyResult(
+            time_stamp=datetime.datetime.now(),
+            result_status=eResultStatus.SUCCESS,
+            result_json=result_obj.to_json()
+        )
+
+        return tools_result
 
     async def get_single_result(self, module_name, time_safe: str = None) -> Optional[DbSingleResult]:
         """已重写"""
@@ -372,7 +400,7 @@ class Account(ModuleManager):
         info = super().generate_daily_config()
         return info
 
-    def generate_daily_result_info(self, result_item: DbDailyResult):
+    def generate_result_info(self, result_item: DbDailyResult):
         resp = {
             "status": result_item.result_status.value,
             "time": result_item.time_stamp.strftime('%Y-%m-%d %H:%M:%S'),
@@ -400,10 +428,10 @@ class Account(ModuleManager):
 
 
 class AccountManager:
-    pathsyntax = re.compile(r'[^\\\|?*/]{1,32}')
+    pathsyntax = re.compile(r'[^\\|?*/]{1,32}')
 
     def __init__(self, parent: 'UserManager', qid: str, readonly: bool = False):
-        if not qid in parent.user_lock:
+        if qid not in parent.user_lock:
             parent.user_lock[qid] = Lock()
         self._lck = parent.user_lock[qid]
         self.qid = qid
@@ -453,7 +481,7 @@ class AccountManager:
 
     @property
     def account_lock(self) -> Dict[str, Lock]:
-        if not self.qid in self._parent.account_lock:
+        if self.qid not in self._parent.account_lock:
             self._parent.account_lock[self.qid] = {}
         return self._parent.account_lock[self.qid]
 
@@ -610,7 +638,7 @@ class UserManager:
         # with open(self.qid_path(qid) + '/secret', 'w') as f:
         #     f.write(UserData(password=password_hash).to_json())
 
-        new_user = DbUser(user_qq=qid, password_hash=pwd_hash,register_time=datetime.datetime.now())
+        new_user = DbUser(user_qq=qid, password_hash=pwd_hash, register_time=datetime.datetime.now())
         self._session.add(new_user)
         self._session.commit()
         self.shift_old_accounts(qid)

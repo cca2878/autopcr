@@ -127,11 +127,15 @@ class ModuleManager:
     def generate_tools_config(self):
         return self.generate_config(self.tool_modules)
 
-    async def generate_image(self, result: Union[TaskResult, Any], status: eResultStatus) -> Image.Image:
+    async def generate_image(self, result: Union[TaskResult, ModuleResult, Any], status: eResultStatus) -> Image.Image:
         if status == eResultStatus.ERROR:
             img = await drawer.draw_msgs([self.parent.qq, self.parent.alias, str(result)])
-        else:
+        elif type(result) is TaskResult:
             img = await drawer.draw_tasks_result(result)
+        elif type(result) is ModuleResult:
+            img = await drawer.draw_task_result(result)
+        else:
+            raise ValueError("Unknown result type")
         return img
     
     async def do_daily(self) -> DbDailyResult:
