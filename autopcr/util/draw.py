@@ -62,7 +62,8 @@ class Drawer():
             if value.log == "功能未启用":
                 continue
             cnt += 1
-            content.append([str(cnt), value.name.strip(), value.config.strip(), "#"+value.status.strip(), value.log.strip()])
+            content.append([str(cnt), value.name.strip(), value.config.strip(),
+                            "#"+value.status.value.strip(), value.log.strip()])
         img = await self.draw(header, content)
         return img
 

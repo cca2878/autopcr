@@ -5,7 +5,7 @@ from ..core import pcrclient
 from ..model.error import SkipError
 
 @dataclass
-class Config():
+class Config:
     key: str
     desc: str
     _default: Union[int, str, list]
@@ -59,7 +59,7 @@ async def _do_check(self, client: pcrclient) -> Tuple[bool, str]:
 def config_option(key:str, desc: str, default, candidates: Union[list, Callable] = [], config_type='str', do_check = _do_check, check: bool = False):
     from .modulebase import Module
     if isinstance(candidates, list):
-        assert(not candidates or default in candidates or all(item in candidates for item in default))
+        assert (not candidates or default in candidates or all(item in candidates for item in default))
     def wrapper(cls: Module):
         config = Config(key=key, desc=desc, _default=default, _candidates=candidates, config_type=config_type, _parent = cls)
         config.do_check = MethodType(do_check, config)

@@ -485,7 +485,7 @@ class pjjc_info(ArenaInfo):
 @description('获得可导入到兰德索尔图书馆的账号数据')
 @name('兰德索尔图书馆导入数据')
 @default(True)
-@text_result
+# @text_result
 class get_library_import_data(Module):
     async def do_task(self, client: pcrclient):
         msg = client.data.get_library_import_data()

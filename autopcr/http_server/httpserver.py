@@ -1,7 +1,12 @@
+import io
+import json
 from copy import deepcopy
 from datetime import timedelta
 import traceback
+from functools import wraps
+
 import quart
+from PIL import Image
 from quart import request, Blueprint, send_file, send_from_directory
 from quart_rate_limiter import RateLimiter, rate_limit, RateLimitExceeded
 from quart_auth import AuthUser, QuartAuth, Unauthorized, current_user, login_required, login_user, logout_user
@@ -9,19 +14,27 @@ from quart_compress import Compress
 import secrets
 import os
 from typing import Callable, Coroutine, Any
+from datetime import datetime, timedelta
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import unpad
+import base64
 
 from ..module.accountmgr import Account, AccountManager, UserException, instance as usermgr, AccountException
 from ..constants import CACHE_DIR
+from ..module.modulebase import eResultStatus, ModuleResult
+from ..module.modulemgr import TaskResult
 
 CACHE_HTTP_DIR = os.path.join(CACHE_DIR, 'http_server')
 
 PATH = os.path.dirname(os.path.abspath(__file__))
 static_path = os.path.join(PATH, 'ClientApp')
+static_path_new = os.path.join(PATH, 'ClientAppVue')
 
 class HttpServer:
-    def __init__(self, host = '0.0.0.0', port = 2, qq_mod = False):
 
-        self.web = Blueprint('web', __name__, static_folder=static_path)
+    def __init__(self, host = '0.0.0.0', port = 2, qq_only = False):
+
+        self.web = Blueprint('web', __name__, static_folder=static_path_new)
 
         self.api = Blueprint('api', __name__, url_prefix = "/api")
 
@@ -32,14 +45,23 @@ class HttpServer:
         RateLimiter(self.quart)
         Compress(self.quart)
         self.quart.secret_key = secrets.token_urlsafe(16)
-
+        self.super_secret = self._init_secret()
         self.app.register_blueprint(self.web)
         self.app.register_blueprint(self.api)
 
         self.host = host
         self.port = port
         self.configure_routes()
-        self.qq_mod = qq_mod
+        self.qq_only = qq_only
+
+    def _init_secret(self):
+        path = os.path.join(CACHE_HTTP_DIR, 'server_secret')
+        if not os.path.exists(path):
+            with open(path, 'w') as f:
+                f.write(secrets.token_urlsafe(256))
+        with open(path, 'r') as f:
+            secret = f.read()
+        return secret
 
     @staticmethod
     def wrapaccount(readonly = False):
@@ -52,9 +74,9 @@ class HttpServer:
                     except AccountException as e:
                         return str(e), 400
                     except Exception as e:
-                        print(e)
+                        traceback.print_exc()
                         return "服务器发生错误", 500
-                else: 
+                else:
                     return "Please specify an account", 400
             inner.__name__ = func.__name__
             return inner
@@ -70,7 +92,20 @@ class HttpServer:
             inner.__name__ = func.__name__
             return inner
         return wrapper
-    
+
+    @staticmethod
+    def check_secret(secret):
+        def decorator(func):
+            @wraps(func)
+            async def wrapper(*args, **kwargs):
+                data = await request.get_json()
+                if 'secret' in data and data['secret'] == secret:
+                    return await func(*args, **kwargs)
+                else:
+                    return "incorrect", 403
+            return wrapper
+        return decorator
+
     def configure_routes(self):
 
         @self.api.errorhandler(RateLimitExceeded)
@@ -107,9 +142,10 @@ class HttpServer:
                 accountmgr.create_account(acc.strip())
                 return "创建账号成功", 200
             except AccountException as e:
+                traceback.print_exc()
                 return str(e), 400
             except Exception as e:
-                print(e)
+                traceback.print_exc()
                 return "服务器发生错误", 500
 
         @self.api.route('/account/sync', methods = ["POST"])
@@ -119,18 +155,19 @@ class HttpServer:
             try:
                 data = await request.get_json()
                 acc = data.get("alias", "")
-                if acc not in accountmgr.accounts():
+                target_acc = data.get("target", [])  # target_acc 可空，为空则同步所有账号
+                if acc not in accountmgr.accounts_map():
                     return "账号不存在", 400
                 async with accountmgr.load(acc) as mgr:
-                    for ano in accountmgr.accounts():
-                        if ano != acc:
+                    for ano in accountmgr.accounts_map():
+                        if ano != acc and (not target_acc or ano in target_acc):
                             async with accountmgr.load(ano) as other:
-                                other.data.config = mgr.data.config
+                                other.data_new.account_config = mgr.data_new.account_config
                 return "配置同步成功", 200
             except AccountException as e:
                 return str(e), 400
             except Exception as e:
-                print(e)
+                traceback.print_exc()
                 return "服务器发生错误", 500
 
         @self.api.route('/account/<string:acc>', methods = ['GET'])
@@ -148,9 +185,12 @@ class HttpServer:
             if request.method == "PUT":
                 data = await request.get_json()
                 if 'username' in data:
-                    account.data.username = data['username']
+                    # account.data.username = data['username']  # 已更改
+                    account.data_new.account_username = data['username']
+                    account.data_new.game_data = {}
                 if 'password' in data:
-                    account.data.password = data['password']
+                    # account.data.password = data['password']  # 已更改
+                    account.data_new.account_password = data['password']
                 return "保存账户信息成功", 200
             elif request.method == "DELETE":
                 account.delete()
@@ -184,7 +224,8 @@ class HttpServer:
         @HttpServer.wrapaccount()
         async def put_config(mgr: Account):
             data = await request.get_json()
-            mgr.data.config.update(data)
+            # mgr.data.config.update(data)  # 已更改
+            mgr.update_config(data)
             return "配置保存成功", 200
 
         @self.api.route('/account/<string:acc>/do_daily', methods = ['POST'])
@@ -192,27 +233,20 @@ class HttpServer:
         @HttpServer.wrapaccountmgr(readonly=True)
         @HttpServer.wrapaccount()
         async def do_daily(mgr: Account):
+            data = await request.get_json()
+            is_text = data.get("text_result", False)
+            # data = await request.get_json()
             try:
-                file_path, _ = await mgr.do_daily()
-                return await send_file(file_path, mimetype='image/jpg')
+                result_item = await mgr.do_daily()
+                # result = json.loads(result_item.result_json)
+                resp = mgr.generate_daily_result_info(result_item)
+                if not is_text:
+                    resp['image'] = mgr.generate_img_base64(Image.open(await mgr.load_daily_image(result_item)))
+                return resp, 200
             except ValueError as e:
                 return str(e), 400
             except Exception as e:
-                print(e)
-                return "服务器发生错误", 500
-
-        @self.api.route('/account/<string:acc>/daily_result/<string:safe_time>', methods = ['GET'])
-        @login_required
-        @HttpServer.wrapaccountmgr(readonly = True)
-        @HttpServer.wrapaccount(readonly= True)
-        async def daily_result(mgr: Account, safe_time: str):
-            try:
-                file_path = await mgr.get_daily_result_from_time(safe_time)
-                return await send_file(file_path, mimetype='image/jpg')
-            except ValueError as e:
-                return str(e), 400
-            except Exception as e:
-                print(e)
+                traceback.print_exc()
                 return "服务器发生错误", 500
 
         @self.api.route('/account/<string:acc>/do_single', methods = ['POST'])
@@ -221,19 +255,86 @@ class HttpServer:
         @HttpServer.wrapaccount()
         async def do_single(mgr: Account):
             data = await request.get_json()
-            order = data.get("order", "")
+            is_text = data.get("text_result", False)
+            order = data.get("order", [])
+            resp = {
+                "order": order,
+                "status": '',
+                "time": '',
+                "result": {}
+            }
             try:
-                file_path = await mgr.do_from_key(deepcopy(mgr.client.keys), order)
-                if file_path.endswith("jpg"):
-                    return await send_file(file_path, mimetype='image/jpg')
+                if len(order) == 0:
+                    raise ValueError("请指定要执行的功能")
+                if len(order) == 1:
+                    result = await mgr.do_from_key(deepcopy(mgr.client.keys), order[0])
+                    status = result.result_status
                 else:
-                    with open(file_path, 'rb') as f:
-                        data = f.read()
-                    return data, 200
+                    result, status = await mgr.do_from_multi_key(deepcopy(mgr.client.keys), order)
+
+                if not is_text:
+                    mime = 'image/jpeg'
+                    if len(order) == 1:
+                        resp['result']['status'] = result.result_status.value
+                        res_img = Image.open(await mgr.load_single_image(result))
+                    else:
+                        resp['result']['status'] = status.value
+                        res_img = await mgr.generate_image(result, status)
+                    byte_arr = io.BytesIO()
+                    res_img.save(byte_arr, optimize=True, quality=75, format='JPEG')
+                    res_img_base64 = base64.b64encode(byte_arr.getvalue()).decode()
+                    resp['image'] = f'data:{mime};base64,{res_img_base64}'
+
+                if len(order) == 1:
+                    resp['result'][order[0]] = json.loads(result.result_json)
+                else:
+                    resp['result'] = json.loads(result.to_json())['result']\
+                                     if status != eResultStatus.ERROR else result
+                resp['time'] = result.time_stamp.strftime('%Y-%m-%d %H:%M:%S')
+                resp['status'] = status.value
+                return resp, 200
+                # if file_path.endswith("jpg"):
+                #     return await send_file(file_path, mimetype='image/jpg')
+                # else:
+                #     with open(file_path, 'rb') as f:
+                #         data = f.read()
+                #     return data, 200
             except ValueError as e:
                 return str(e), 400
             except Exception as e:
-                print(e)
+                traceback.print_exc()
+                return "服务器发生错误", 500
+
+        @self.api.route('/account/<string:acc>/daily_result/<int:result_id>', methods = ['GET'])
+        @login_required
+        @HttpServer.wrapaccountmgr(readonly = True)
+        @HttpServer.wrapaccount(readonly= True)
+        async def daily_result(mgr: Account, result_id: int):
+            is_text = request.args.get('text') is not None
+            try:
+                if result_id == 0:
+                    result = await mgr.get_latest_daily_result()
+                    if result is None:
+                        return "无结果", 404
+                    resp = mgr.generate_daily_result_info(result)
+                    if not is_text:
+                        img = await mgr.generate_image(
+                            result.result_json if result.result_status == eResultStatus.ERROR
+                            else TaskResult().from_json(result.result_json), result.result_status)
+                        resp['image'] = mgr.generate_img_base64(img, quality=50)
+                else:
+                    result = await mgr.get_daily_result_from_id(result_id)
+                    if result is None:
+                        return "无结果", 404
+                    resp = mgr.generate_daily_result_info(result)
+                    if not is_text:
+                        # return json.loads(result.result_json), 200
+                        img = Image.open(await mgr.load_daily_image(result))
+                        resp['image'] = mgr.generate_img_base64(img, quality=50)
+                return resp, 200
+            except ValueError as e:
+                return str(e), 400
+            except Exception as e:
                 traceback.print_exc()
                 return "服务器发生错误", 500
 
@@ -266,11 +367,11 @@ class HttpServer:
         @HttpServer.wrapaccount(readonly = True)
         async def query_validate(mgr: Account):
             from ..bsdk.validator import validate_dict, ValidateInfo
-            if mgr.data.username not in validate_dict:
+            if mgr.data_new.account_username not in validate_dict:
                 return ValidateInfo(status="empty").to_dict(), 200
             else:
-                ret = validate_dict[mgr.data.username].to_dict()
-                del validate_dict[mgr.data.username]
+                ret = validate_dict[mgr.data_new.account_username].to_dict()
+                del validate_dict[mgr.data_new.account_username]
                 return ret, 200
 
         @self.api.route('/validate', methods = ['POST'])
@@ -283,6 +384,26 @@ class HttpServer:
             from ..bsdk.validator import ValidateInfo
             validate_ok_dict[id] = ValidateInfo.from_dict(data)
             return "", 200
+
+        @self.api.route('/modify_profile', methods = ['POST'])
+        @rate_limit(1, timedelta(seconds=1))
+        @rate_limit(3, timedelta(minutes=1))
+        @login_required
+        async def modify_profile():
+            qid: str = current_user.auth_id
+            user = usermgr.qid_map().get(qid, None)
+            data = await request.get_json()
+            if 'pwd_hash' in data and data['pwd_hash'] != '':
+                user.password_hash = data['pwd_hash']
+            if 'user_qq' in data:
+                if not usermgr.pathsyntax.fullmatch(data['user_qq']):
+                    return "user_qq incorrect", 400
+                if usermgr.qid_map().get(data['user_qq'], None) is not None:
+                    return "user_qq duplication", 400
+                user.user_qq = data['user_qq']
+                logout_user()
+            usermgr.save()
+            return "modified", 200
 
         @self.api.route('/login/qq', methods = ['POST'])
         @rate_limit(1, timedelta(seconds=1))
@@ -309,10 +430,6 @@ class HttpServer:
             password = data.get('password', "")
             if not qq or not password:
                 return "请输入QQ和密码", 400
-            if self.qq_mod:
-                from ...server import is_valid_qq
-                if not await is_valid_qq(qq):
-                    return "无效的QQ", 400
             try:
                 usermgr.create(str(qq), str(password))
                 login_user(AuthUser(qq))
@@ -320,7 +437,7 @@ class HttpServer:
             except UserException as e:
                 return str(e), 400
             except Exception as e:
-                print(e)
+                traceback.print_exc()
                 return "服务器发生错误", 500
 
         @self.api.route('/logout', methods = ['POST'])
@@ -331,12 +448,62 @@ class HttpServer:
             logout_user()
             return "再见, " + accountmgr.qid, 200
 
+        @self.api.route('/super', methods = ['POST'])
+        @rate_limit(1, timedelta(minutes=1))
+        @HttpServer.check_secret(self.super_secret)
+        async def super_test():
+            return "correct", 200
+
+        @self.api.route('/super/users', methods = ['POST'])
+        @rate_limit(1, timedelta(seconds=3))
+        @HttpServer.check_secret(self.super_secret)
+        async def super_get_users():
+            resp = []
+            for item in usermgr.qid_map().values():
+                user_info = {'id': item.user_id, 'user_qq': item.user_qq,
+                             'register_time': item.register_time.strftime('%Y-%m-%d %H:%M:%S'),
+                             'pwd_invalid': item.if_need_reset_pwd}
+                resp.append(user_info)
+            return resp, 200
+
+        @self.api.route('/super/users/reset_pwd', methods = ['POST'])
+        @rate_limit(1, timedelta(seconds=3))
+        @HttpServer.check_secret(self.super_secret)
+        async def super_reset_usr_pwd():
+            data = await request.get_json()
+            if 'user_qq' not in data or 'pwd_hash' not in data:
+                return "incorrect", 403
+            user_qq = data['user_qq']
+            users = usermgr.qid_map()
+            user = users.get(user_qq, None)
+            if user is None:
+                return "incorrect", 403
+            user.password_hash = data['pwd_hash']
+            usermgr.save()
+            return "modified", 200
+
+        @self.api.route('/super/users/set_ban', methods = ['POST'])
+        @rate_limit(1, timedelta(seconds=3))
+        @HttpServer.check_secret(self.super_secret)
+        async def super_set_usr_ban():
+            data = await request.get_json()
+            if 'user_qq' not in data or 'ban' not in data:
+                return "incorrect", 403
+            user_qq = data['user_qq']
+            users = usermgr.qid_map()
+            user = users.get(user_qq, None)
+            if user is None:
+                return "incorrect", 403
+            user.if_deleted = bool(data['ban'])
+            usermgr.save()
+            return "modified", 200
+
         # frontend
         @self.web.route("/", defaults={"path": ""})
         @self.web.route("/<path:path>")
         async def index(path):
-            if os.path.exists(os.path.join(str(self.web.static_folder), path)):
-                return await send_from_directory(str(self.web.static_folder), path, mimetype=("text/javascript" if path.endswith(".js") else None))
+            if os.path.exists(os.path.join(str(self.web.static_folder), path)) and path:
+                return await send_from_directory(str(self.web.static_folder), path)
             else:
                 return await send_from_directory(str(self.web.static_folder), 'index.html')
 

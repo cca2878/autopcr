@@ -27,7 +27,7 @@ import secrets
 address = None  # 填你的公网IP或域名，不填则会自动尝试获取
 useHttps = False
 
-server = HttpServer(qq_mod=True)
+server = HttpServer(qq_only=True)
 app = nonebot.get_bot().server_app
 QuartAuth(app, cookie_secure=False)
 RateLimiter(app)
@@ -114,36 +114,24 @@ async def check_validate(bot: HoshinoBot, ev: CQEvent, acc: Account):
     from .autopcr.bsdk.validator import validate_dict
     for _ in range(120):
         if acc.qq in validate_dict:
-            status = validate_dict[acc.data.username].status
+            # status = validate_dict[acc.data.username].status
+            status = validate_dict[acc.data_new.account_username].status
             if status == "ok":
                 del validate_dict[acc.alias]
                 break
 
-            url = validate_dict[acc.data.username].url
+            # url = validate_dict[acc.data.username].url
+            url = validate_dict[acc.data_new.account_username].url
             url = address + url.lstrip("/daily/")
             
             msg=f"[CQ:reply,id={ev.ev.message_id}]pcr账号登录需要验证码，请点击以下链接在120秒内完成认证:\n{url}"
             bot.send(ev, msg)
 
-            del validate_dict[acc.data.username]
+            del validate_dict[acc.data_new.account_username]
 
         else:
             await asyncio.sleep(1)
 
-async def is_valid_qq(qq: str):
-    qq = str(qq)
-    groups = (await sv.get_enable_groups()).keys()
-    bot = nonebot.get_bot()
-    for group in groups:
-        try:
-            async for member in await bot.get_group_member_list(group_id=group):
-                if qq == str(member['user_id']):
-                    return True
-        except:
-            for member in await bot.get_group_member_list(group_id=group):
-                if qq == str(member['user_id']):
-                    return True
-    return False
 
 def register_tool(name: str, key: str):
     def wrapper(func):
@@ -168,7 +156,7 @@ def wrap_accountmgr(func):
             if not priv.check_priv(ev,priv.ADMIN):
                 return bot.finish(ev, f'[CQ:reply,id={ev.message_id}]指定用户清日常需要管理员权限')
 
-        if user_id not in usermgr.qids():
+        if user_id not in usermgr.qid_map():
             return bot.finish(ev, f'[CQ:reply,id={ev.message_id}]未找到{user_id}的账号，请发送【{prefix}配置日常】进行配置')
 
         async with usermgr.load(user_id, readonly=True) as accmgr:
@@ -186,13 +174,13 @@ def wrap_account(func):
                 alias = str(m.data['text']).strip().split(' ')[0]
                 break
 
-        if len(list(accmgr.accounts())) == 1:
-            alias = list(accmgr.accounts())[0]
+        if len(list(accmgr.accounts_map())) == 1:
+            alias = list(accmgr.accounts_map().keys())[0]
 
-        if alias not in accmgr.accounts():
+        if alias not in accmgr.accounts_map():
             alias = accmgr.default_account
 
-        if alias not in accmgr.accounts():
+        if alias not in accmgr.accounts_map():
             if alias:
                 bot.finish(ev, f"[CQ:reply,id={ev.message_id}]未找到昵称为【{alias}】的账号")
             else:
@@ -246,7 +234,7 @@ async def clean_daily_all(bot: HoshinoBot, ev: CQEvent, accmgr: AccountManager):
         async with accmgr.load(alias) as acc:
             return await clean_daily(bot, ev, acc)
 
-    for acc in accmgr.accounts():
+    for acc in accmgr.accounts_map():
         alias.append(escape(acc))
         task.append(loop.create_task(clean_daily_pre(acc)))
 
@@ -269,30 +257,6 @@ async def clean_daily_all(bot: HoshinoBot, ev: CQEvent, accmgr: AccountManager):
         msg += "\n".join([f"{a}: {m}" for a, m in err])
         await bot.send(ev, msg)
 
-@sv.on_fullmatch(f"{prefix}查内鬼")
-async def find_ghost(bot: HoshinoBot, ev: CQEvent):
-    msg = []
-    for qq in usermgr.qids():
-        if not await is_valid_qq(qq):
-            msg.append(qq)
-    if not msg:
-        msg.append("未找到内鬼")
-    await bot.finish(ev, " ".join(msg))
-
-@sv.on_fullmatch(f"{prefix}清内鬼")
-async def clean_ghost(bot: HoshinoBot, ev: CQEvent):
-    msg = []
-    for qq in usermgr.qids():
-        if not await is_valid_qq(qq):
-            msg.append(qq)
-    if not msg:
-        msg.append("未找到内鬼")
-    else:
-        for qq in msg:
-            usermgr.delete(qq)
-        msg = [f"已清除{len(msg)}个内鬼:"] + msg
-    await bot.finish(ev, " ".join(msg))
-
 @sv.on_prefix(f"{prefix}清日常")
 @wrap_accountmgr
 @wrap_account
@@ -313,10 +277,10 @@ async def clean_daily_from(bot: HoshinoBot, ev: CQEvent, acc: Account):
 
 async def clean_daily(bot: HoshinoBot, ev: CQEvent, acc: Account):
     loop = asyncio.get_event_loop()
-    loop.create_task(check_validate(bot, ev, acc))
+    await loop.create_task(check_validate(bot, ev, acc))
 
-    img, _ = await acc.do_daily()
-    return img
+    result_item, _ = await acc.do_daily()
+    return await result_item.image
 
 
 @sv.on_prefix(f"{prefix}日常报告")
@@ -328,7 +292,7 @@ async def clean_daily_result(bot: HoshinoBot, ev: CQEvent, acc: Account):
         result_id = int(ev.message.extract_plain_text().split(' ')[-1].strip())
     except Exception as e:
         pass
-    img = await acc.get_daily_result_from_id(result_id)
+    img = await acc.get_daily_result_img_from_index(result_id)
     if not img:
         await bot.finish(ev, f"[CQ:reply,id={ev.message_id}]" + "未找到日常报告")
     await bot.finish(ev, f"[CQ:reply,id={ev.message_id}]" + MessageSegment.image(f'file:///{img}'))
@@ -337,7 +301,7 @@ async def clean_daily_result(bot: HoshinoBot, ev: CQEvent, acc: Account):
 @wrap_accountmgr
 async def clean_daily_time(bot: HoshinoBot, ev: CQEvent, accmgr: AccountManager):
     content = []
-    for alias in accmgr.accounts():
+    for alias in accmgr.accounts_map():
         async with accmgr.load(alias, readonly=True) as acc:
             content += [[acc.alias, daily_result.time, "#" + daily_result.status] for daily_result in acc.data.daily_result]
 
@@ -363,9 +327,9 @@ async def cron_log(bot: HoshinoBot, ev: CQEvent):
 async def cron_statistic(bot: HoshinoBot, ev: CQEvent):
     cnt_clanbattle = Counter()
     cnt = Counter()
-    for qq in usermgr.qids():
+    for qq in usermgr.qid_map():
         async with usermgr.load(qq, readonly=True) as accmgr:
-            for alias in accmgr.accounts():
+            for alias in accmgr.accounts_map():
                 async with accmgr.load(alias, readonly=True) as acc:
                     for i in range(1,5):
                         suf = f"cron{i}"
@@ -400,7 +364,7 @@ async def tool_used(bot: HoshinoBot, ev: CQEvent, tool: ToolInfo, config: Dict[s
         loop = asyncio.get_event_loop()
         loop.create_task(check_validate(bot, ev, acc))
 
-        img = await acc.do_from_key(config, tool.key)
+        img = await acc.do_from_key(config, [tool.key])
         msg = f"[CQ:reply,id={ev.message_id}]{alias}"
         msg += MessageSegment.image(f'file:///{img}')
         await bot.send(ev, msg)

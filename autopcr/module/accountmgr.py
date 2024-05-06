@@ -1,43 +1,69 @@
 # 名字需要斟酌一下
-
-from dataclasses import dataclass, field
-from dataclasses_json import dataclass_json
-from ..core.pcrclient import pcrclient
-from .modulemgr import ModuleManager
-import os, re
-from typing import Any, Dict, Iterator, List
-from ..constants import CONFIG_PATH, OLD_CONFIG_PATH, RESULT_DIR
-from asyncio import Lock
-import json
-from copy import deepcopy
-import hashlib
-from ..db.database import db
+import base64
 import datetime
+import hashlib
+import io
+import json
+import os
+import re
+from asyncio import Lock
+# from copy import deepcopy
+from dataclasses import dataclass, field, InitVar
+from functools import wraps
+from typing import Any, Dict, Iterator, List, Union, Optional, Generator
+
 from PIL import Image
+# from PIL import Image
+from dataclasses_json import dataclass_json
+from sqlalchemy.orm import Session
+
+from .accdatabase import DbAccount, DbModule
+from .accdatabase import instance as accdb, DbUser, DbDailyResult
+from .accdatabase import DbSingleResult
+from .modulebase import eResultStatus, ModuleResult, eModuleType
+from .modulemgr import ModuleManager, TaskResult
+from ..constants import CONFIG_PATH, OLD_CONFIG_PATH, RESULT_DIR
+from ..core.pcrclient import pcrclient
+from ..db.database import db
+from sqlalchemy import and_
+
 
 class AccountException(Exception):
     pass
+
+
 class UserException(Exception):
     pass
 
+
 @dataclass_json
 @dataclass
-class DailyResult:
-    path: str = ""
-    time: str = "无"
-    time_safe: str = "无"
-    status: str = "skip"
+class TaskRecord:
+    task_id: int = 0
+    time: str = "暂无数据"
+    time_safe: str = "暂无数据"
+    time_obj: InitVar[datetime.datetime] = None
+    status: eResultStatus = eResultStatus.SKIP
 
-    def safe_info(self) -> "DailyResult":
-        return DailyResult(path = "", time = self.time, time_safe = self.time_safe, status = self.status)
+    def __post_init__(self, time_obj: datetime.datetime = None):
+        if time_obj is not None:
+            self.time = time_obj.strftime('%Y-%m-%d %H:%M:%S')
+            self.time_safe = db.format_time_safe(time_obj)
+
 
 @dataclass_json
 @dataclass
 class AccountData:
+    """弃用"""
     username: str = ""
     password: str = ""
+    game_name: str = ""
+    uid: str = ""
+    clan_name: str = ""
+    clan_id: str = ""
     config: Dict[str, Any] = field(default_factory=dict)
-    daily_result: List[DailyResult] = field(default_factory=list)
+    daily_result: List[TaskRecord] = field(default_factory=list)
+
 
 @dataclass_json
 @dataclass
@@ -45,28 +71,44 @@ class UserData:
     password: str = ""
     default_account: str = ""
 
+
 class Account(ModuleManager):
     def __init__(self, parent: 'AccountManager', qid: str, account: str, readonly: bool = False):
         if not account in parent.account_lock:
             parent.account_lock[account] = Lock()
         self._lck = parent.account_lock[account]
-        self._filename = parent.path(account)
+        # self._filename = parent.path(account)
+        self._session = accdb.session
         self._parent = parent
         self.readonly = readonly
         self.id = hashlib.md5(account.encode('utf-8')).hexdigest()
-
-        if not os.path.exists(self._filename):
-            raise AccountException("账号不存在")
-
-        with open(self._filename, 'r') as f:
-            self.data: AccountData = AccountData.from_json(f.read())
-            self.old_data: AccountData = deepcopy(self.data)
-
         self.qq = qid
         self.alias = account
-        self.token = f"{self.qq}_{self.alias}"
-        super().__init__(self.data.config, self)
-    
+
+        if self.readonly:
+            def raise_exception():
+                raise Exception("Cannot commit in readonly mode")
+
+            self._session.commit = raise_exception
+        # if not os.path.exists(self._filename):
+        #     raise AccountException("账号不存在")
+        #
+        # with open(self._filename, 'r') as f:
+        #     self.data: AccountData = AccountData.from_json(f.read())
+        #     self.old_data: AccountData = deepcopy(self.data)
+
+        user: DbUser = self._session.query(DbUser).filter(DbUser.user_qq == qid).first()
+        if user is None:
+            raise UserException("用户不存在")
+        self.data_new: DbAccount = self._session.query(DbAccount).filter(
+            and_(DbAccount.account_alias == account, DbAccount.user_id == user.user_id, DbAccount.if_deleted == False)
+        ).first()
+        if self.data_new is None:
+            raise AccountException("账号不存在")
+
+        # self.token = f"{self.qq}_{self.alias}"
+        super().__init__(self.data_new.account_config, self)
+
     async def __aenter__(self):
         if not self.readonly:
             await self._lck.acquire()
@@ -74,76 +116,210 @@ class Account(ModuleManager):
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         if not self.readonly:
-            if self.data != self.old_data:
-                await self.save_data()
+            # if self.data != self.old_data:
+            #     await self.save_data()
+            self._session.commit()
             self._lck.release()
+        self._session.close()
 
-    async def save_data(self):
-        with open(self._filename, 'w') as f:
-            f.write(self.data.to_json())
+    async def save_data(self):  # 弃用
+        pass
+        # with open(self._filename, 'w') as f:
+        #     f.write(self.data.to_json())
 
-    async def save_daily_result(self, result: Image.Image, status: str) -> str:
-        now = datetime.datetime.now()
-        time_safe = db.format_time_safe(now)
-        file = os.path.join(RESULT_DIR, f"{self.token}_daily_{time_safe}.jpg")
-        result.save(file, optimize=True, quality=75)
+    # @auto_commit
+    def update_config(self, config: Dict[str, Any]):
+        new_config = self.data_new.account_config.copy()
+        new_config.update(config)
+        self.data_new.account_config = new_config
 
-        old_list = self.data.daily_result
-        while len(old_list) >= 4:
-            if os.path.exists(old_list[-1].path):
-                os.remove(old_list[-1].path)
-            old_list.pop()
-        item = DailyResult(path = file, time = db.format_time(now), time_safe=time_safe, status = status)
-        self.data.daily_result = [item] + old_list
-        return file
+    async def load_daily_image(self, result: DbDailyResult) -> str:
+        if not result.image_path or not os.path.exists(result.image_path):
+            file_name = f'daily_{result.daily_result_id}_{db.format_time_safe(result.time_stamp)}.jpg'
+            img = await self.generate_image(
+                result.result_json if result.result_status == eResultStatus.ERROR
+                else TaskResult().from_json(result.result_json), result.result_status)
 
-    async def save_single_result(self, module: str, result: Image.Image) -> str:
-        file = os.path.join(RESULT_DIR, f"{self.token}_{module}.jpg")
-        result.save(file, optimize=True, quality=75)
-        return file
+            file_path = os.path.join(self.qq, self.alias, 'daily')
+            if not os.path.exists(os.path.join(RESULT_DIR, file_path)):
+                os.makedirs(os.path.join(RESULT_DIR, file_path))
+            img.save(os.path.join(RESULT_DIR, file_path, file_name), optimize=True, quality=75)
+            result.image_path = os.path.join(file_path, file_name)
+        return os.path.join(RESULT_DIR, result.image_path)
 
-    async def save_single_result_text(self, module: str, result: str) -> str:
-        file = os.path.join(RESULT_DIR, f"{self.token}_{module}.txt")
-        with open(file, 'w') as f:
-            f.write(result)
-        return file
+    async def load_single_image(self, result: DbSingleResult) -> str:
+        if not result.image_path or not os.path.exists(result.image_path):
+            m_name = result.db_module.module_key
+            file_name = f'single_{result.single_result_id}_{m_name}_{db.format_time_safe(result.time_stamp)}.jpg'
+            img = await self.generate_image(status=result.result_status, result=
+            TaskResult(order=[m_name],
+                       result={m_name: ModuleResult.from_json(result.result_json)}))
+            file_path = os.path.join(self.qq, self.alias, 'single')
+            if not os.path.exists(os.path.join(RESULT_DIR, file_path)):
+                os.makedirs(os.path.join(RESULT_DIR, file_path))
+            img.save(os.path.join(RESULT_DIR, file_path, file_name), optimize=True, quality=75, format='JPEG')
+            result.image_path = os.path.join(file_path, file_name)
+        return os.path.join(RESULT_DIR, result.image_path)
 
-    async def get_daily_result_from_id(self, id: int = 0) -> str:
-        if len(self.data.daily_result) > id:
-            return self.data.daily_result[id].path
+    async def save_daily_result(self, result: str, status: eResultStatus) -> DbDailyResult:
+        """已重写"""
+        # now = datetime.datetime.now()
+        # time_safe = db.format_time_safe(now)
+        # result_dir = os.path.join(RESULT_DIR, self.qq, self.alias, 'daily', f"{self.token}_{time_safe}")
+        # file = os.path.join(result_dir, 'result.json')
+        # result.save(file, optimize=True, quality=75)
+        # result_json = json.dumps({'is_error': is_error, 'data': result})
+        # item = DailyResult.create(result_dir = result_dir, result=result, time = db.format_time(now),
+        # time_safe=time_safe, status = status)
+        item = DbDailyResult(time_stamp=datetime.datetime.now(), result_status=status, result_json=result)
+        for m in self.modules_map:
+            item.db_modules.append(self.modules_map[m])
+        self.data_new.db_daily_result.insert(0, item)
+        # item = create_daily_result([self.qq, self.alias], result, datetime.datetime.now(), status)
+        # old_list = self.data.daily_result
+        self._session.commit()
+        if len(self.data_new.db_daily_result) >= 4:
+            for i in range(3, len(self.data_new.db_daily_result)):
+                # Delete the last result
+                self.delete_result(self.data_new.db_daily_result[i])
+
+        #     if os.path.exists(old_list[-1].result_dir):
+        #         os.remove(old_list[-1].result_dir)
+        #     old_list.pop()
+        # self.data.daily_result = [item] + old_list
+        return item
+
+    async def save_multi_result(self, result: TaskResult, time_obj: datetime = None):
+        time_obj = datetime.datetime.now() if time_obj is None else time_obj
+        dm_map = self.modules_map
+        for m in result.order:
+            await self.save_single_result(m, result.result[m], status=result.result[m].status,
+                                          time_obj=time_obj, modules_map=dm_map)
+
+    async def save_single_result(self, key: str, result: Union[ModuleResult, str], status: eResultStatus,
+                                 time_obj=None, modules_map=None) -> DbSingleResult:
+        """已重写"""
+        # file = os.path.join(RESULT_DIR, f"{self.token}_{module}.jpg")
+        # result.save(file, optimize=True, quality=75)
+        # item = DbSingleResult(time_stamp=datetime.datetime.now(), module_id=module_id, result_json=result)
+        # self.data_new.db_single_result.append(item)
+        modules_map = modules_map or self.modules_map
+        time_obj = time_obj or datetime.datetime.now()
+        parent_m = modules_map[key]
+        new_res = DbSingleResult(time_stamp=time_obj, result_status=status, module_id=parent_m.module_id,
+                                 result_json=result if status == eResultStatus.ERROR else result.to_json())
+        self.data_new.db_single_result.insert(0, new_res)
+        # parent_m.db_single_result.append(new_res)
+        self._session.commit()
+
+        results = [r for r in self.data_new.db_single_result if r.module_id == parent_m.module_id]
+        if len(results) >= 4:
+            for i in range(3, len(results)):
+                # Delete the last result
+                self.delete_result(results[i])
+
+        return new_res
+
+    def delete_result(self, result: Union[DbDailyResult, DbSingleResult]):
+        self._session.delete(result)
+        if result.image_path:
+            img_path = os.path.join(RESULT_DIR, result.image_path)
+            if os.path.exists(img_path):
+                os.remove(img_path)
+
+    async def get_daily_result_img_from_index(self, id_: int = 0) -> str:
+        """已重写"""
+        result = self.data_new.db_daily_result
+        if len(result) > id_:
+            return await self.load_daily_image(result[id_])
         else:
             return ""
 
-    async def get_daily_result_from_time(self, safe_time: str) -> str:
-        ret = [daily_result.path for daily_result in self.data.daily_result if safe_time == daily_result.time_safe]
-        if ret:
-            return ret[0]
-        else:
-            return ""
+    async def get_daily_result_from_id(self, result_id: int) -> Optional[DbDailyResult]:
+        """已重写"""
+        # ret = [daily_result.path for daily_result in self.data.daily_result if safe_time == daily_result.time_safe]
+        # results_time = {db.format_time_safe(item.time_stamp): item for item in self.data_new.db_daily_result}
+        for daily_result in self.data_new.db_daily_result:
+            if daily_result.daily_result_id == result_id:
+                return daily_result
+        return None
+        # if ret:
+        #     return ret[0]
+        # else:
+        #     return ""
+        # return results_time.get(safe_time, None)
 
-    async def get_single_result(self, module) -> str:
-        file = os.path.join(RESULT_DIR, f"{self.token}_{module}.jpg")
-        file2 = os.path.join(RESULT_DIR, f"{self.token}_{module}.txt")
-        if os.path.exists(file):
-            return file
-        elif os.path.exists(file2):
-            return file2
-        else:
-            return ""
+    async def get_latest_daily_result(self) -> Optional[DbDailyResult]:
+        # Get the latest valid DailyResult
+        latest_daily_result = self.data_new.db_daily_result[0] if self.data_new.db_daily_result else None
+        latest_single_time = self.data_new.db_single_result[0].time_stamp if self.data_new.db_single_result else None
 
-    def get_last_daily_clean(self) -> DailyResult:
-        if self.data.daily_result:
-            return self.data.daily_result[0].safe_info()
+        if not latest_daily_result:
+            return None
+        if latest_daily_result.result_status == eResultStatus.ERROR or latest_single_time is None:
+            return latest_daily_result
+        if latest_daily_result.time_stamp > latest_single_time:
+            return latest_daily_result
+
+        result_obj = TaskResult().from_json(latest_daily_result.result_json)
+
+        # 找到最新的结果，性能方面可能有问题，猪鼻不会算法
+        for module in latest_daily_result.db_modules:
+            for sr in self.data_new.db_single_result:
+                if sr.db_module.module_type == eModuleType.DAILY and sr.module_id == module.module_id and sr.time_stamp > latest_daily_result.time_stamp:
+                    if sr.result_status == eResultStatus.ERROR:
+                        result_obj.result[module.module_key] = sr.result_json
+                    else:
+                        result_obj.result[module.module_key] = ModuleResult.from_json(sr.result_json)
+                    break
+
+        new_daily_result = DbDailyResult(
+            time_stamp=datetime.datetime.now(),
+            result_status=eResultStatus.SUCCESS,
+            result_json=result_obj.to_json()
+        )
+
+        return new_daily_result
+
+    async def get_single_result(self, module_name, time_safe: str = None) -> Optional[DbSingleResult]:
+        """已重写"""
+        for result in self.data_new.db_single_result:
+            if (result.module.module_key == module_name and
+                    (time_safe is None or db.format_time_safe(result.time_stamp) == time_safe)):
+                return result
+        return None
+
+        # file = os.path.join(RESULT_DIR, f"{self.token}_{module_name}.jpg")
+        # file2 = os.path.join(RESULT_DIR, f"{self.token}_{module_name}.txt")
+        # if os.path.exists(file):
+        #     return file
+        # elif os.path.exists(file2):
+        #     return file2
+        # else:
+        #     return ""
+
+    def get_last_daily_clean(self) -> TaskRecord:
+        """弃用"""
+        if self.data_new.db_daily_result:
+            result = self.data_new.db_daily_result[0]
+            return TaskRecord(time=result.time_stamp.strftime('%Y-%m-%d %H:%M:%S'),
+                              time_safe=db.format_time_safe(result.time_stamp),
+                              status=result.result_status)
+
         else:
-            return DailyResult()
+            return TaskRecord()
+
+    def get_all_daily_clean(self):
+        return [TaskRecord(time_obj=result.time_stamp, task_id=result.daily_result_id, status=result.result_status)
+                for result in self.data_new.db_daily_result]
 
     def get_client(self) -> pcrclient:
         return self.get_android_client()
 
-    def get_ios_client(self) -> pcrclient: # Header TODO
+    def get_ios_client(self) -> pcrclient:  # Header TODO
         client = pcrclient({
-            'account': self.data.username,
-            'password': self.data.password,
+            'account': self.data_new.account_username,
+            'password': self.data_new.account_password,
             'channel': 1000,
             'platform': 1
         })
@@ -151,8 +327,8 @@ class Account(ModuleManager):
 
     def get_android_client(self) -> pcrclient:
         client = pcrclient({
-            'account': self.data.username,
-            'password': self.data.password,
+            'account': self.data_new.account_username,
+            'password': self.data_new.account_password,
             'channel': 1,
             'platform': 2
         })
@@ -166,16 +342,54 @@ class Account(ModuleManager):
                 return ""
             else:
                 return "*" * 7 + mask_str[-1]
-        return {
+
+        info = {
             'alias': self.alias,
-            'username': self.data.username,
-            'password': 8 * "*" if self.data.password else "",
-            'area': [{"key": 'daily', "name":"日常"}, {"key": 'tools', "name":"工具"}]
+            'username': self.data_new.account_username,
+            'password': 8 * "*" if self.data_new.account_password else "",
+            'game_info': self.data_new.game_data,
+            'area': [{"key": 'daily', "name": "日常"}, {"key": 'tools', "name": "工具"}]
         }
+        if self.data_new.db_daily_result:
+            record = TaskRecord(status=self.data_new.db_daily_result[0].result_status.value,
+                                time_obj=self.data_new.db_daily_result[0].time_stamp,
+                                task_id=self.data_new.db_daily_result[0].daily_result_id)
+            info['last_daily_info'] = json.loads(record.to_json())
+        else:
+            info['last_daily_info'] = json.loads(TaskRecord().to_json())
+        if self.data_new.db_single_result:
+            record = TaskRecord(status=self.data_new.db_single_result[0].result_status.value,
+                                time_obj=self.data_new.db_single_result[0].time_stamp,
+                                task_id=self.data_new.db_single_result[0].single_result_id)
+            info['last_task_info'] = json.loads(record.to_json())
+            info['last_task_info']['name'] = self.data_new.db_single_result[0].db_module.module_name
+        else:
+            info['last_task_info'] = json.loads(TaskRecord().to_json())
+            info['last_task_info']['name'] = None
+        return info
 
     def generate_daily_info(self):
         info = super().generate_daily_config()
         return info
+
+    def generate_daily_result_info(self, result_item: DbDailyResult):
+        resp = {
+            "status": result_item.result_status.value,
+            "time": result_item.time_stamp.strftime('%Y-%m-%d %H:%M:%S'),
+            "order": json.loads(result_item.result_json)['order']
+            if result_item.result_status != eResultStatus.ERROR else [],
+            "result": json.loads(result_item.result_json)['result']
+            if result_item.result_status != eResultStatus.ERROR else result_item.result_json,
+            'image': None
+        }
+        return resp
+
+    def generate_img_base64(self, res_img: Image.Image, quality: int = 75) -> str:
+        mime = 'image/jpeg'
+        byte_arr = io.BytesIO()
+        res_img.save(byte_arr, optimize=True, quality=quality, format='JPEG')
+        res_img_base64 = base64.b64encode(byte_arr.getvalue()).decode()
+        return f'data:{mime};base64,{res_img_base64}'
 
     def generate_tools_info(self):
         info = super().generate_tools_config()
@@ -183,6 +397,7 @@ class Account(ModuleManager):
 
     def delete(self):
         self._parent.delete(self.alias)
+
 
 class AccountManager:
     pathsyntax = re.compile(r'[^\\\|?*/]{1,32}')
@@ -192,13 +407,18 @@ class AccountManager:
             parent.user_lock[qid] = Lock()
         self._lck = parent.user_lock[qid]
         self.qid = qid
-        self.root = parent.qid_path(qid);
+        # self.root = parent.qid_path(qid)
         self._parent = parent
         self.readonly = readonly
-        
-        with open(self.root + '/secret', 'r') as f:
-            self.secret: UserData = UserData.from_json(f.read())
-            self.old_secret = deepcopy(self.secret)
+
+        self._session = accdb.session
+        self.secret_new: DbUser = self._session.query(DbUser).filter(DbUser.user_qq == qid).first()
+        if self.secret_new is None:
+            raise UserException("账号不存在")
+        #
+        # with open(self.root + '/secret', 'r') as f:
+        #     self.secret: UserData = UserData.from_json(f.read())
+        #     self.old_secret = deepcopy(self.secret)
 
     async def __aenter__(self):
         if not self.readonly:
@@ -207,9 +427,29 @@ class AccountManager:
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         if not self.readonly:
-            if self.secret != self.old_secret:
-                self.save_secret()
+            self._session.commit()
+
+            # if self.secret != self.old_secret:
+            #     self.save_secret()
             self._lck.release()
+        self._session.close()
+
+    def check_account(func):
+        """
+        装饰器：检查账户是否合法、是否归属于当前用户、是否已经标记删除
+        需要方法的第一个参数为账户名
+        """
+
+        @wraps(func)
+        def wrapper(self, account, *args, **kwargs):
+            if not AccountManager.pathsyntax.fullmatch(account):
+                raise AccountException('非法账户名')
+            if account not in self.accounts_map() or self.query_account(account).if_deleted:
+                raise AccountException(f"非法账户请求：{account}")
+
+            return func(self, account, *args, **kwargs)
+
+        return wrapper
 
     @property
     def account_lock(self) -> Dict[str, Lock]:
@@ -217,69 +457,114 @@ class AccountManager:
             self._parent.account_lock[self.qid] = {}
         return self._parent.account_lock[self.qid]
 
+    def query_account(self, account: str) -> Optional[DbAccount]:
+        """
+        根据alias在用户的账号列表中查询账户
+        用这玩意的方法，记得加上 check_account 装饰器
+        """
+        return self.accounts_map().get(account, None)
+
     def create_account(self, account: str) -> Account:
         if not AccountManager.pathsyntax.fullmatch(account):
-            raise AccountException('非法账户名')
-        if account in self.accounts():
-            raise AccountException('账号已存在')
-        with open(self.path(account), 'w') as f:
-            f.write(AccountData().to_json())
+            raise AccountException('非法账号名')
+        if account in self.accounts_map():
+            raise AccountException('名称重复')
+
+        new_acc = DbAccount(account_alias=account)
+        self.secret_new.db_account.append(new_acc)
+        self._session.commit()
+        if len(self.accounts_map()) == 1:
+            self.secret_new.default_account_id = new_acc.account_id
+        self._session.commit()
+        # with open(self.path(account), 'w') as f:
+        #     f.write(AccountData().to_json())
         return self.load(account)
 
-    def save_secret(self):
-        with open(self.root + '/secret', 'w') as f:
-            f.write(self.secret.to_json())
+    def save_secret(self):  # 弃用
+        pass
+        # with open(self.root + '/secret', 'w') as f:
+        #     f.write(self.secret.to_json())
 
+    @check_account
     def set_default_account(self, account: str):
-        if account not in self.accounts():
-            raise AccountException('账号不存在')
-        self.secret.default_account = account
+        self.secret_new.default_account_id = self.query_account(account).account_id
 
-    def validate_password(self, password: str) -> bool:
-        return self.secret.password == password
+    def validate_password(self, password_hash: str) -> bool:
+        return self.secret_new.password_hash == password_hash
 
-    def load(self, account: str = "", readonly = False) -> Account:
+    def load(self, account: str = "", readonly=False) -> Account:
         if not AccountManager.pathsyntax.fullmatch(account):
             raise AccountException('非法账户名')
-        if not account:
-            account = self.secret.default_account
-        if not account and len(list(self.accounts())) == 1:
-            account = list(self.accounts())[0]
-        if not account:
+        if account not in self.accounts_map():
+            raise AccountException(f"非法账户请求：{account}")
+        acc = account or self.default_account or (
+            list(self.accounts_map().keys())[0] if len(self.accounts_map()) == 1 else None)
+        if not acc:
             raise AccountException('No default account')
-        return Account(self, self.qid, account, readonly)
+        return Account(self, self.qid, acc, readonly)
+        # acc = account
+        # if not acc:
+        #     acc = self.secret.default_account
+        # if not acc and len(list(self.accounts())) == 1:
+        #     acc = list(self.accounts())[0]
+        # if not acc:
+        #     raise AccountException('No default account')
+        # return Account(self, self.qid, acc, readonly)
 
-    def path(self, account: str) -> str:
-        return os.path.join(self.root, account + '.json')
+    # def path(self, account: str) -> str:  # 弃用
+    #     return os.path.join(self.root, account + '.json')
 
-    def delete(self, account: str): 
-        if not AccountManager.pathsyntax.fullmatch(account):
-            raise AccountException('非法账户名')
-        os.remove(self.path(account))
+    @check_account
+    def delete(self, account: str):
+        """软删除"""
+        db_acc_obj = self.query_account(account)
+
+        if len(self.accounts_map()) == 1:
+            self.secret_new.default_account_id = None
+        elif db_acc_obj.account_id == self.secret_new.default_account_id:
+            next_acc = next((acc.account_id for acc in self.secret_new.db_account if
+                             acc.account_id != db_acc_obj.account_id and not acc.if_deleted), None)
+            self.secret_new.default_account_id = next_acc
+
+        db_acc_obj.if_deleted = True
+        db_acc_obj.account_alias += f"_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}"
+        # self._session.delete(self.query_account(account))
+        # os.remove(self.path(account))
 
     @property
     def default_account(self) -> str:
-        return self.secret.default_account
+        default_acc = next((acc for acc in self.secret_new.db_account
+                            if acc.account_id == self.secret_new.default_account_id), None)
+        return default_acc.account_alias if default_acc else None
+        # return self.secret.default_account
 
-    def accounts(self) -> Iterator[str]:
-        for fn in os.listdir(self.root):
-            if fn.endswith('.json'):
-                yield fn[:-5]
+    def accounts_map(self):
+        # for fn in os.listdir(self.root):
+        #     if fn.endswith('.json'):
+        #         yield fn[:-5]
+        """
+        查询 DbAccount 表并过滤出与当前用户 user_id 匹配的记录
+        从每个匹配的记录中提取 account_alias 并返回
+        """
+        return {record.account_alias: record for record in self.secret_new.db_account if not record.if_deleted}
 
     async def generate_info(self):
+        """已重写"""
         accounts = []
-        for account in self.accounts():
-            async with self.load(account, readonly = True) as acc:
+        for account in self.accounts_map():
+            async with self.load(account, readonly=True) as acc:
+                records = acc.get_all_daily_clean()
                 accounts.append({
                     'name': account,
-                    'daily_clean_time': acc.get_last_daily_clean().to_dict(),
-                    'daily_clean_time_list': [daily_result.safe_info().to_dict() for daily_result in acc.data.daily_result],
-                    })
+                    'daily_clean_time': json.loads(records[0].to_json()) if records else [],
+                    'daily_clean_time_list': [json.loads(r.to_json()) for r in records] if records else [],
+                })
         return {
             'qq': self.qid,
             'default_account': self.default_account,
             'accounts': accounts
         }
+
 
 class UserManager:
     pathsyntax = re.compile(r'\d{5,12}')
@@ -288,57 +573,82 @@ class UserManager:
         self.root = root
         self.user_lock: Dict[str, Lock] = {}
         self.account_lock: Dict[str, Dict[str, Lock]] = {}
+        self._session = accdb.session
 
-    def validate_password(self, qid: str, password: str) -> bool:
+    def check_qid(func):
+        """
+        装饰器：检查qid是否合法、是否已经标记删除
+        需要方法的第一个参数为qid
+        """
+
+        @wraps(func)
+        def wrapper(self, qid, *args, **kwargs):
+            if not UserManager.pathsyntax.fullmatch(qid) or qid not in self.qid_map():
+                raise AccountException('无效的QQ号')
+            return func(self, qid, *args, **kwargs)
+
+        return wrapper
+
+    def validate_password(self, qid: str, pwd_hash: str) -> bool:
         try:
-            if qid not in self.qids():
+            if qid not in self.qid_map():
                 return False
-            return self.load(qid).validate_password(password)
+            return self.load(qid).validate_password(pwd_hash)
         except Exception as e:
             print(e)
             return False
 
-    def qid_path(self, qid: str) -> str:
-        return os.path.join(self.root, qid)
+    # def qid_path(self, qid: str) -> str:
+    #     return os.path.join(self.root, qid)
 
-    def create(self, qid: str, password: str) -> AccountManager:
+    def create(self, qid: str, pwd_hash: str) -> AccountManager:
         if not UserManager.pathsyntax.fullmatch(qid):
             raise UserException('无效的QQ号')
-        if qid in self.qids():
-            raise UserException('QQ号已存在')
-        os.makedirs(self.qid_path(qid))
-        with open(self.qid_path(qid) + '/secret', 'w') as f:
-            f.write(UserData(password=password).to_json())
+        if qid in self.qid_map():
+            raise UserException('该QQ号用户已存在')
+        # os.makedirs(self.qid_path(qid))
+        # with open(self.qid_path(qid) + '/secret', 'w') as f:
+        #     f.write(UserData(password=password_hash).to_json())
+
+        new_user = DbUser(user_qq=qid, password_hash=pwd_hash,register_time=datetime.datetime.now())
+        self._session.add(new_user)
+        self._session.commit()
         self.shift_old_accounts(qid)
         return AccountManager(self, qid)
 
-    def shift_old_accounts(self, qid: str):
-        import glob
-        for config in glob.glob(os.path.join(OLD_CONFIG_PATH, "*.json")):
-            ok = False
-            with open(config, 'r') as f:
-                data = json.load(f)
-                if str(data.get('qq', '')) == qid:
-                    ok = True
-            if ok:
-                os.rename(config, os.path.join(self.qid_path(qid), data['alian'] + '.json'))
+    def save(self):
+        self._session.commit()
 
+    def shift_old_accounts(self, qid: str):  # TODO: 改数据库工程量大，编写独立脚本迁移
+        pass
+        # import glob
+        # for config in glob.glob(os.path.join(OLD_CONFIG_PATH, "*.json")):
+        #     with open(config, 'r') as f:
+        #         data = json.load(f)
+        #         if str(data.get('qq', '')) == qid:
+        #             os.rename(config, os.path.join(self.qid_path(qid), data['alian'] + '.json'))
+
+    @check_qid
     def load(self, qid: str, readonly: bool = False) -> AccountManager:
-        if not UserManager.pathsyntax.fullmatch(qid):
-            raise UserException('无效的QQ号')
         return AccountManager(self, qid, readonly)
 
-    def delete(self, qid: str, account: str = ""):
-        if not UserManager.pathsyntax.fullmatch(qid):
-            raise AccountException('无效的QQ号')
-        if account:
-            self.load(qid).delete(account)
-        else:
-            os.removedirs(self.qid_path(qid))
+    @check_qid
+    def delete(self, qid: str, account: str = ""):  # TODO: 数据库标记删除。暂时没有启用，以后再写
+        pass
+        # if not UserManager.pathsyntax.fullmatch(qid) or qid not in self.qids():
+        #     raise AccountException('无效的QQ号')
+        # if account:
+        #     self.load(qid).delete(account)
+        # else:
+        #     os.removedirs(self.qid_path(qid))
 
-    def qids(self) -> Iterator[str]:
-        for fn in os.listdir(self.root):
-            if fn.isdigit() and os.path.isdir(os.path.join(self.root, fn)):
-                yield fn
+    def qid_map(self) -> dict[str, DbUser]:
+        # for fn in os.listdir(self.root):
+        #     if fn.isdigit() and os.path.isdir(os.path.join(self.root, fn)):
+        #         yield fn
+        return {item.user_qq: item for item in self._session.query(DbUser).filter(DbUser.if_deleted == False).all()}
+        # for record in self._session.query(DbUser).filter(not DbUser.if_deleted).all():
+        #     yield record.user_qq
+
 
 instance = UserManager(os.path.join(CONFIG_PATH))

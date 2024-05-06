@@ -1,7 +1,11 @@
 from abc import abstractmethod
 from dataclasses import dataclass
 import datetime
+from enum import Enum
+
 from dataclasses_json import dataclass_json
+# from sqlalchemy import Enum
+
 from ..core.pcrclient import pcrclient
 from ..model.error import *
 from ..model.enums import *
@@ -31,13 +35,27 @@ def stamina_relative(cls):
 def text_result(cls):
     return _wrap_init(cls, lambda self: setattr(self, 'text_result', True))
 
+
+class eResultStatus(Enum):
+    SKIP = "skip"
+    ERROR = "error"
+    ABORT = "abort"
+    SUCCESS = "success"
+
+class eModuleType(Enum):
+    CRON = "cron"
+    DAILY = "daily"
+    TOOL = "tool"
+    HIDDEN = "hidden"
+
 @dataclass_json
 @dataclass
 class ModuleResult:
+    time: str = None
     name: str = ""
     config: str = ""
     log: str = ""
-    status: str = ""
+    status: eResultStatus = eResultStatus.SKIP
 
 # refers to a schudule to be done
 class Module:
@@ -93,8 +111,9 @@ class Module:
     @abstractmethod
     async def do_task(self, client: pcrclient): ...
 
-    async def do_from(self, client: pcrclient) -> ModuleResult:
+    async def do_from(self, client: pcrclient, time: datetime.datetime = None) -> ModuleResult:
         result: ModuleResult = ModuleResult(
+                time = time if time is None else time.strftime("%Y-%m-%d %H:%M:%S"),
                 name=self.name,
                 config = '\n'.join([f"{self.config[key].desc}: {self.get_config_str(key)}" for key in self.config]),
                 status = "",
@@ -111,18 +130,17 @@ class Module:
             else:
                 raise SkipError('功能未启用')
 
-
-            result.status = "success"
+            result.status = eResultStatus.SUCCESS
         except SkipError as e:
             result.log = str(e)
-            result.status = "skip"
+            result.status = eResultStatus.SKIP
         except AbortError as e:
             result.log = str(e)
-            result.status = "abort"
+            result.status = eResultStatus.ABORT
         except Exception as e:
             traceback.print_exc()
             result.log = str(e)
-            result.status = "error"
+            result.status = eResultStatus.ERROR
         finally:
             result.log = ('\n'.join(self.log) + "\n" + result.log).strip() or "ok"
 
@@ -148,10 +166,6 @@ class Module:
         else:
             default = self.config[key].default
         value = self._parent.get_config(key, default)
-        if key in self.config and self.config[key].config_type == "multi":
-            if not isinstance(value, list):
-                value = [value]
-            value = [v for v in value if v in self.config[key].candidates]
         if key != self.key and self.config[key].candidates and (
             not isinstance(value, list) and (
                 value not in self.config[key].candidates or 
@@ -180,4 +194,3 @@ class Module:
 
     def _log(self, msg):
         self.log.append(msg)
-

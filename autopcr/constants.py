@@ -72,5 +72,4 @@ def refresh_headers(version: str = None):
     IOS_HEADERS['APP-VER'] = VERSION
 
 
-
 refresh_headers()
