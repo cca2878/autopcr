@@ -494,7 +494,7 @@ class AccountManager:
 
     def create_account(self, account: str) -> Account:
         if not AccountManager.pathsyntax.fullmatch(account):
-            raise AccountException('非法账号名')
+            raise AccountException(f'非法账号名{account}')
         if account in self.accounts_map():
             raise AccountException('名称重复')
 
@@ -522,7 +522,7 @@ class AccountManager:
 
     def load(self, account: str = "", readonly=False) -> Account:
         if not AccountManager.pathsyntax.fullmatch(account):
-            raise AccountException('非法账户名')
+            raise AccountException(f'非法账户名{account}')
         if account not in self.accounts_map():
             raise AccountException(f"非法账户请求：{account}")
         acc = account or self.default_account or (
