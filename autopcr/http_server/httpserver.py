@@ -239,7 +239,7 @@ class HttpServer:
             try:
                 result_item = await mgr.do_daily()
                 # result = json.loads(result_item.result_json)
-                resp = mgr.generate_daily_result_info(result_item)
+                resp = mgr.generate_result_info(result_item)
                 if not is_text:
                     resp['image'] = mgr.generate_img_base64(Image.open(await mgr.load_daily_image(result_item)))
                 return resp, 200
@@ -316,7 +316,7 @@ class HttpServer:
                     result = await mgr.get_latest_daily_result()
                     if result is None:
                         return "无结果", 404
-                    resp = mgr.generate_daily_result_info(result)
+                    resp = mgr.generate_result_info(result)
                     if not is_text:
                         img = await mgr.generate_image(
                             result.result_json if result.result_status == eResultStatus.ERROR
@@ -326,11 +326,26 @@ class HttpServer:
                     result = await mgr.get_daily_result_from_id(result_id)
                     if result is None:
                         return "无结果", 404
-                    resp = mgr.generate_daily_result_info(result)
+                    resp = mgr.generate_result_info(result)
                     if not is_text:
                         # return json.loads(result.result_json), 200
                         img = Image.open(await mgr.load_daily_image(result))
                         resp['image'] = mgr.generate_img_base64(img, quality=50)
+                return resp, 200
+            except ValueError as e:
+                return str(e), 400
+            except Exception as e:
+                traceback.print_exc()
+                return "服务器发生错误", 500
+
+        @self.api.route('/account/<string:acc>/tools_result', methods = ['GET'])
+        @login_required
+        @HttpServer.wrapaccountmgr(readonly = True)
+        @HttpServer.wrapaccount(readonly= True)
+        async def tools_result(mgr: Account):
+            try:
+                result = await mgr.get_latest_tools_result()
+                resp = mgr.generate_result_info(result)
                 return resp, 200
             except ValueError as e:
                 return str(e), 400

@@ -23,6 +23,11 @@ class SourceIniGetMaintenanceStatusResponse(sdkrequests.SourceIniGetMaintenanceS
 class SkillLevelUpResponse(responses.SkillLevelUpResponse):
     async def update(self, mgr: datamgr, request):
         mgr.unit[self.unit_data.id] = self.unit_data
+        if self.user_gold:
+            mgr.gold = self.user_gold
+        if self.item_data:
+            for item in self.item_data:
+                mgr.update_inventory(item)
 
 @handles
 class UnitFreeLevelUpResponse(responses.UnitFreeLevelUpResponse):
@@ -431,6 +436,23 @@ class DungeonSkipResponse(responses.DungeonSkipResponse):
         if self.user_gold:
             mgr.gold = self.user_gold
 
+@handles
+class SpecialDungeonEnterAreaResponse(responses.SpecialDungeonEnterAreaResponse):
+    async def update(self, mgr: datamgr, request):
+        if self.skip_result_list:
+            for result in self.skip_result_list:
+                for reward in result.reward_list:
+                    mgr.update_inventory(reward)
+        if self.total_floor_reward_info:
+            for reward in self.total_floor_reward_info:
+                mgr.update_inventory(reward)
+        if self.mission_reward_info:
+            for reward in self.mission_reward_info:
+                mgr.update_inventory(reward)
+        # missing update_bank_gold
+        if self.user_gold:
+            mgr.gold = self.user_gold
+
 
 @handles
 class DungeonResetResponse(responses.DungeonResetResponse):
@@ -529,7 +551,8 @@ class SubStorySkeConfirmResponse(responses.SubStorySkeConfirmResponse):
 class UnitCraftEquipResponse(responses.UnitCraftEquipResponse):
     async def update(self, mgr: datamgr, request):
         mgr.unit[self.unit_data.id] = self.unit_data
-        mgr.gold = self.user_gold
+        if self.user_gold:
+            mgr.gold = self.user_gold
         if self.item_data:
             for item in self.item_data:
                 mgr.update_inventory(item)
@@ -542,7 +565,8 @@ class UnitCraftEquipResponse(responses.UnitCraftEquipResponse):
 class UnitMultiPromotionResponse(responses.UnitMultiPromotionResponse):
     async def update(self, mgr: datamgr, request):
         mgr.unit[self.unit_data.id] = self.unit_data
-        mgr.gold = self.user_gold
+        if self.user_gold:
+            mgr.gold = self.user_gold
         if self.item_data:
             for item in self.item_data:
                 mgr.update_inventory(item)
