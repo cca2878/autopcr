@@ -275,7 +275,10 @@ class clanbattle_shop_special_buy(shop_buyer):
             target = [(item.slot_id, item.price.currency_num) for item in shop_content.item_list if not item.sold and
                       db.is_unit_memory((item.type, item.item_id)) and item.item_id in [sd_id, hl_id] and
                       -memory_demand_gap[(item.type, item.item_id)] < self._unit_memory_count()]
-            if await self._shop_buyer(client, shop_content, target, reset_cnt, result) != 0:
+            if target:
+                if await self._shop_buyer(client, shop_content, target, reset_cnt, result) != 0:
+                    break
+            else:
                 break
         await self._after_buy(client, prev, old_reset_cnt, result)
 
