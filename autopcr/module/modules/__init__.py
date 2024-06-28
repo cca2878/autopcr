@@ -72,6 +72,7 @@ daily_modules = [
     jjc_shop,
     pjjc_shop,
     clanbattle_shop,
+    clanbattle_shop_special_buy,
     
     clan_equip_request,
     love_up,

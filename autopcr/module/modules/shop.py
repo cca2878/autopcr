@@ -45,23 +45,22 @@ class shop_buyer(Module):
 
     async def do_task(self, client: pcrclient):
         lmt = self.coin_limit()
-        reset_cnt = self.reset_count()
+        iniy_shop_content = await self._get_shop(client)
 
-        shop_content = await self._get_shop(client)
-
-        prev = client.data.get_shop_gold(shop_content.system_id)
-        old_reset_cnt = shop_content.reset_count
+        prev = client.data.get_shop_gold(iniy_shop_content.system_id)
+        old_reset_cnt = iniy_shop_content.reset_count
         result = []
+        reset_cnt = self.reset_count()
+        opt: Dict[Union[int, str], int] = {
+            '所有': 1,
+            '最高': db.equip_max_rank,
+            '次高': db.equip_max_rank - 1,
+            '次次高': db.equip_max_rank - 2,
+        }
 
         while True:
-            opt: Dict[Union[int, str], int] = {
-                '所有': 1,
-                '最高': db.equip_max_rank,
-                '次高': db.equip_max_rank - 1,
-                '次次高': db.equip_max_rank - 2,
-            }
+            shop_content = await self._get_shop(client)
             equip_demand_gap = client.data.get_equip_demand_gap(like_unit_only=self.require_equip_units_fav(), start_rank=opt[self.require_equip_units_rank()])
-
             memory_demand_gap = client.data.get_memory_demand_gap()
 
             gold = client.data.get_shop_gold(shop_content.system_id)
@@ -77,26 +76,35 @@ class shop_buyer(Module):
                         (db.is_unit_memory((item.type, item.item_id)) and -memory_demand_gap[(item.type, item.item_id)] < self._unit_memory_count())
                     )
             ]
-
-            slots_to_buy = [item[0] for item in target]
-            cost_gold = sum([item[1] for item in target])
-
-            if cost_gold > gold: # 货币不足
-                self._log(f"商店货币{gold}不足购买需求的{cost_gold}，停止购买")
+            if await self._shop_buyer(client, shop_content, target, reset_cnt, result) != 0:
                 break
-            
-            if slots_to_buy:
-                res = await client.shop_buy_item(shop_content.system_id, slots_to_buy)
-                result.extend(res.purchase_list)
-            # else: # 无商品购买还需要重置吗
-            #     break
+        await self._after_buy(client, prev, old_reset_cnt, result)
 
-            if shop_content.reset_count >= reset_cnt:
-                self._log(f"商店已重置{shop_content.reset_count}次，停止购买")
-                break
-            
-            await client.shop_reset(shop_content.system_id)
-            shop_content = await self._get_shop(client)
+    async def _shop_buyer(self, client: pcrclient, shop_content, target: List[tuple], reset_cnt, result):
+        gold = client.data.get_shop_gold(shop_content.system_id)
+
+        slots_to_buy = [item[0] for item in target]
+        cost_gold = sum([item[1] for item in target])
+
+        if cost_gold > gold:  # 货币不足
+            self._log(f"商店货币{gold}不足购买需求的{cost_gold}，停止购买")
+            return -1
+
+        if slots_to_buy:
+            res = await client.shop_buy_item(shop_content.system_id, slots_to_buy)
+            result.extend(res.purchase_list)
+        # else: # 无商品购买还需要重置吗
+        #     break
+
+        if shop_content.reset_count >= reset_cnt:
+            self._log(f"商店已重置{shop_content.reset_count}次，停止购买")
+            return -1
+
+        await client.shop_reset(shop_content.system_id)
+        return 0
+
+    async def _after_buy(self, client: pcrclient, prev, old_reset_cnt, result):
+        shop_content = await self._get_shop(client)
 
         cost_gold = prev - client.data.get_shop_gold(shop_content.system_id)
         if cost_gold == 0:
@@ -105,6 +113,7 @@ class shop_buyer(Module):
             self._log(f"花费了{cost_gold}货币，重置了{shop_content.reset_count - old_reset_cnt}次，购买了:")
             msg = await client.serlize_reward(result)
             self._log(msg)
+        pass
 
 @singlechoice('shop_buy_exp_count_limit', "经验药水储备", 99000, [100, 1000, 5000, 10000, 50000, 99000])
 @singlechoice('shop_buy_equip_upper_count_limit', "强化石储备", 99000, [100, 1000, 5000, 10000, 50000, 99000])
@@ -137,7 +146,7 @@ class limit_shop(shop_buyer):
 @singlechoice('underground_shop_buy_equip_count_limit', "装备盈余值", 0, [0, 20, 50, 100, 200, 500, 9900])
 @singlechoice('underground_shop_buy_coin_limit', "货币阈值", 10000, [0, 10000, 50000, 100000, 200000])
 @singlechoice("underground_shop_buy_equip_consider_unit_rank", "角色起始品级", "所有", ["所有", "最高", "次高", "次次高"])
-@booltype("underground_shop_buy_equip_consider_unit_fav", "收藏角色", False) 
+@booltype("underground_shop_buy_equip_consider_unit_fav", "收藏角色", False)
 @inttype('underground_shop_reset_count', "重置次数(<=200)", 0, [i for i in range(201)])
 @multichoice("underground_shop_buy_kind", "购买种类", ['记忆碎片', '装备'], ['记忆碎片', '装备'])
 @name('地下城商店购买')
@@ -159,7 +168,7 @@ class underground_shop(shop_buyer):
 @singlechoice('jjc_shop_buy_equip_count_limit', "装备盈余值", 0, [0, 20, 50, 100, 200, 500, 9900])
 @singlechoice('jjc_shop_buy_coin_limit', "货币阈值", 10000, [0, 10000, 50000, 100000, 200000])
 @singlechoice("jjc_shop_buy_equip_consider_unit_rank", "角色起始品级", "所有", ["所有", "最高", "次高", "次次高"])
-@booltype("jjc_shop_buy_equip_consider_unit_fav", "收藏角色", False) 
+@booltype("jjc_shop_buy_equip_consider_unit_fav", "收藏角色", False)
 @inttype('jjc_shop_reset_count', "重置次数(<=20)", 0, [i for i in range(21)])
 @multichoice("jjc_shop_buy_kind", "购买种类", ['记忆碎片', '装备'], ['记忆碎片', '装备'])
 @name('jjc商店购买')
@@ -181,7 +190,7 @@ class jjc_shop(shop_buyer):
 @singlechoice('pjjc_shop_buy_equip_count_limit', "装备盈余值", 0, [0, 20, 50, 100, 200, 500, 9900])
 @singlechoice('pjjc_shop_buy_coin_limit', "货币阈值", 10000, [0, 10000, 50000, 100000, 200000])
 @singlechoice("pjjc_shop_buy_equip_consider_unit_rank", "角色起始品级", "所有", ["所有", "最高", "次高", "次次高"])
-@booltype("pjjc_shop_buy_equip_consider_unit_fav", "收藏角色", False) 
+@booltype("pjjc_shop_buy_equip_consider_unit_fav", "收藏角色", False)
 @inttype('pjjc_shop_reset_count', "重置次数(<=20)", 0, [i for i in range(21)])
 @multichoice("pjjc_shop_buy_kind", "购买种类", ['记忆碎片', '装备'], ['记忆碎片', '装备'])
 @name('pjjc商店购买')
@@ -204,7 +213,7 @@ class pjjc_shop(shop_buyer):
 @singlechoice('clanbattle_shop_buy_equip_count_limit', "装备盈余值", 0, [0, 20, 50, 100, 200, 500, 9900])
 @singlechoice('clanbattle_shop_buy_coin_limit', "货币阈值", 10000, [0, 10000, 50000, 100000, 200000])
 @singlechoice("clanbattle_shop_buy_equip_consider_unit_rank", "角色起始品级", "所有", ["所有", "最高", "次高", "次次高"])
-@booltype("clanbattle_shop_buy_equip_consider_unit_fav", "收藏角色", False) 
+@booltype("clanbattle_shop_buy_equip_consider_unit_fav", "收藏角色", False)
 @inttype('clanbattle_shop_reset_count', "重置次数(<=20)", 0, [i for i in range(21)])
 @multichoice("clanbattle_shop_buy_kind", "购买种类", ['记忆碎片'], ['记忆碎片', '装备'])
 @name('会战商店购买')
@@ -221,4 +230,52 @@ class clanbattle_shop(shop_buyer):
     def buy_kind(self) -> List[str]: return self.get_config('clanbattle_shop_buy_kind')
     def require_equip_units_fav(self) -> bool: return self.get_config('clanbattle_shop_buy_equip_consider_unit_fav')
     def require_equip_units_rank(self) -> str: return self.get_config('clanbattle_shop_buy_equip_consider_unit_rank')
+
+
+@singlechoice('clanbattle_shop_special_buy_memory_count_limit', "记忆碎片盈余值", 0, [0, 10, 20, 120, 270, 9900])
+@singlechoice('clanbattle_shop_special_buy_coin_limit', "货币阈值", 10000, [0, 10000, 50000, 100000, 200000])
+@inttype('clanbattle_shop_special_buy_reset_count', "重置次数(<=500)", 0, [i for i in range(501)])
+@name('会战商店购买圣电、灰狼碎片')
+@description('根据碎片需求购买会战商店里的圣电、灰狼碎片')
+@default(False)
+class clanbattle_shop_special_buy(shop_buyer):
+    def _unit_memory_count(self):
+        return self._get_count('记忆碎片', 'clanbattle_shop_special_buy_memory_count_limit')
+
+    def coin_limit(self) -> int:
+        return self.get_config('clanbattle_shop_special_buy_coin_limit')
+
+    def system_id(self) -> eSystemId:
+        return eSystemId.CLAN_BATTLE_SHOP
+
+    def reset_count(self) -> int:
+        return self.get_config('clanbattle_shop_special_buy_reset_count')
+
+    def buy_kind(self) -> List[str]:
+        return ['记忆碎片']
+
+    async def do_task(self, client: pcrclient):
+        sd_id = 31145  # 圣电碎片
+        hl_id = 31043  # 灰狼碎片
+        lmt = self.coin_limit()
+        init_shop_content = await self._get_shop(client)
+
+        prev = client.data.get_shop_gold(init_shop_content.system_id)
+        old_reset_cnt = init_shop_content.reset_count
+        result = []
+        reset_cnt = self.reset_count()
+
+        while True:
+            shop_content = await self._get_shop(client)
+            gold = client.data.get_shop_gold(shop_content.system_id)
+            memory_demand_gap = client.data.get_memory_demand_gap()
+            if gold < lmt:
+                raise SkipError(f"商店货币{gold}不足{lmt}，将不进行购买")
+
+            target = [(item.slot_id, item.price.currency_num) for item in shop_content.item_list if not item.sold and
+                      db.is_unit_memory((item.type, item.item_id)) and item.item_id in [sd_id, hl_id] and
+                      -memory_demand_gap[(item.type, item.item_id)] < self._unit_memory_count()]
+            if await self._shop_buyer(client, shop_content, target, reset_cnt, result) != 0:
+                break
+        await self._after_buy(client, prev, old_reset_cnt, result)
 
