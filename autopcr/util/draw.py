@@ -42,7 +42,7 @@ class Drawer():
     def color(self):
         from datetime import datetime
         now = datetime.now()
-        is_night = not(now.hour < 18 and now.hour > 7)
+        is_night = not(18 > now.hour > 7)
         if is_night:
             return self.dark_color()
         else:
@@ -68,7 +68,7 @@ class Drawer():
         return img
 
     async def draw_task_result(self, data: "ModuleResult") -> Image.Image:
-        content = [["配置", data.config.strip()], ["状态", "#"+data.status.strip()], ["结果", data.log.strip()]]
+        content = [["配置", data.config.strip()], ["状态", "#"+data.status.value.strip()], ["结果", data.log.strip()]]
         header = ["名字", data.name.strip()]
         img = await self.draw(header, content)
         return img

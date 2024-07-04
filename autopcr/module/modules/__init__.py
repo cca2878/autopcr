@@ -31,6 +31,7 @@ daily_modules = [
     explore_exp,
     explore_mana,
     underground_skip,
+    special_underground_skip,
     tower_cloister_sweep,
     smart_very_hard_sweep,
     jjc_reward,
@@ -71,6 +72,7 @@ daily_modules = [
     jjc_shop,
     pjjc_shop,
     clanbattle_shop,
+    shop_special_buy,
     
     clan_equip_request,
     love_up,
