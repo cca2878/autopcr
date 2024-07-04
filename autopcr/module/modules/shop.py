@@ -45,10 +45,10 @@ class shop_buyer(Module):
 
     async def do_task(self, client: pcrclient):
         lmt = self.coin_limit()
-        iniy_shop_content = await self._get_shop(client)
+        init_shop_content = await self._get_shop(client)
 
-        prev = client.data.get_shop_gold(iniy_shop_content.system_id)
-        old_reset_cnt = iniy_shop_content.reset_count
+        prev = client.data.get_shop_gold(init_shop_content.system_id)
+        old_reset_cnt = init_shop_content.reset_count
         result = []
         reset_cnt = self.reset_count()
         opt: Dict[Union[int, str], int] = {
@@ -232,53 +232,100 @@ class clanbattle_shop(shop_buyer):
     def require_equip_units_rank(self) -> str: return self.get_config('clanbattle_shop_buy_equip_consider_unit_rank')
 
 
-@singlechoice('clanbattle_shop_special_buy_memory_count_limit', "记忆碎片盈余值", 0, [0, 10, 20, 120, 270, 9900])
-@singlechoice('clanbattle_shop_special_buy_coin_limit', "货币阈值", 10000, [0, 10000, 50000, 100000, 200000])
-@inttype('clanbattle_shop_special_buy_reset_count', "重置次数(<=500)", 0, [i for i in range(501)])
-@name('会战商店购买圣电、灰狼碎片')
-@description('根据碎片需求购买会战商店里的圣电、灰狼碎片')
+@singlechoice('shop_special_buy_pjjcshop_coin_limit', "pjjc币保留阈值", 10000, [0, 10000, 50000, 100000, 200000])
+@inttype('shop_special_buy_pjjcshop_reset_count', "pjjc商店重置次数(<=500)", 0, [i for i in range(501)])
+@singlechoice('shop_special_buy_memory_hl_limit', "灰狼碎片盈余值", 0, [0, 10, 20, 120, 270, 9900])
+@booltype('shop_special_buy_hl', "购买灰狼碎片", True)
+@singlechoice('shop_special_buy_clanshop_coin_limit', "会战币保留阈值", 10000, [0, 10000, 50000, 100000, 200000])
+@inttype('shop_special_buy_clanshop_reset_count', "会战商店重置次数(<=500)", 0, [i for i in range(501)])
+@singlechoice('shop_special_buy_memory_sd_limit', "圣电碎片盈余值", 0, [0, 10, 20, 120, 270, 9900])
+@booltype('shop_special_buy_sd', "购买圣电碎片", True)
+@name('商店购买圣电/灰狼碎片')
+@description('根据碎片需求购买会战商店里的圣电碎片和pjjc商店的灰狼碎片')
 @default(False)
-class clanbattle_shop_special_buy(shop_buyer):
-    def _unit_memory_count(self):
-        return self._get_count('记忆碎片', 'clanbattle_shop_special_buy_memory_count_limit')
+class shop_special_buy(Module):
+    class special_buyer(shop_buyer):
+        @property
+        @abstractmethod
+        def _item_id_list(self): ...
 
-    def coin_limit(self) -> int:
-        return self.get_config('clanbattle_shop_special_buy_coin_limit')
+        async def do_task(self, client: pcrclient):
+            lmt = self.coin_limit()
+            init_shop_content = await self._get_shop(client)
 
-    def system_id(self) -> eSystemId:
-        return eSystemId.CLAN_BATTLE_SHOP
+            prev = client.data.get_shop_gold(init_shop_content.system_id)
+            old_reset_cnt = init_shop_content.reset_count
+            result = []
+            reset_cnt = self.reset_count()
 
-    def reset_count(self) -> int:
-        return self.get_config('clanbattle_shop_special_buy_reset_count')
+            while True:
+                shop_content = await self._get_shop(client)
+                gold = client.data.get_shop_gold(shop_content.system_id)
+                memory_demand_gap = client.data.get_memory_demand_gap()
+                if gold < lmt:
+                    raise SkipError(f"商店货币{gold}不足{lmt}，将不进行购买")
 
-    def buy_kind(self) -> List[str]:
-        return ['记忆碎片']
-
-    async def do_task(self, client: pcrclient):
-        sd_id = 31145  # 圣电碎片
-        hl_id = 31043  # 灰狼碎片
-        lmt = self.coin_limit()
-        init_shop_content = await self._get_shop(client)
-
-        prev = client.data.get_shop_gold(init_shop_content.system_id)
-        old_reset_cnt = init_shop_content.reset_count
-        result = []
-        reset_cnt = self.reset_count()
-
-        while True:
-            shop_content = await self._get_shop(client)
-            gold = client.data.get_shop_gold(shop_content.system_id)
-            memory_demand_gap = client.data.get_memory_demand_gap()
-            if gold < lmt:
-                raise SkipError(f"商店货币{gold}不足{lmt}，将不进行购买")
-
-            target = [(item.slot_id, item.price.currency_num) for item in shop_content.item_list if not item.sold and
-                      db.is_unit_memory((item.type, item.item_id)) and item.item_id in [sd_id, hl_id] and
-                      -memory_demand_gap[(item.type, item.item_id)] < self._unit_memory_count()]
-            if target:
+                target = [(item.slot_id, item.price.currency_num) for item in shop_content.item_list if not item.sold
+                          and db.is_unit_memory((item.type, item.item_id)) and item.item_id in self._item_id_list and
+                          -memory_demand_gap[(item.type, item.item_id)] < self._unit_memory_count()]
                 if await self._shop_buyer(client, shop_content, target, reset_cnt, result) != 0:
                     break
-            else:
-                break
-        await self._after_buy(client, prev, old_reset_cnt, result)
+            await self._after_buy(client, prev, old_reset_cnt, result)
 
+    @default(True)
+    class clanbattle_shop_buyer(special_buyer):
+        @property
+        def _item_id_list(self):
+            return [31145]
+
+        def _unit_memory_count(self):
+            return self._get_count('记忆碎片', 'shop_special_buy_memory_sd_limit')
+
+        def coin_limit(self) -> int:
+            return self.get_config('shop_special_buy_clanshop_coin_limit')
+
+        def system_id(self) -> eSystemId:
+            return eSystemId.CLAN_BATTLE_SHOP
+
+        def reset_count(self) -> int:
+            return self.get_config('shop_special_buy_clanshop_reset_count')
+
+        def buy_kind(self) -> List[str]:
+            return ['记忆碎片']
+
+    @default(True)
+    class pjjc_shop_buyer(special_buyer):
+        @property
+        def _item_id_list(self):
+            # 灰狼碎片
+            return [31159]
+
+        def _unit_memory_count(self):
+            return self._get_count('记忆碎片', 'shop_special_buy_memory_hl_limit')
+
+        def coin_limit(self) -> int:
+            return self.get_config('shop_special_buy_pjjcshop_coin_limit')
+
+        def system_id(self) -> eSystemId:
+            return eSystemId.GRAND_ARENA_SHOP
+
+        def reset_count(self) -> int:
+            return self.get_config('shop_special_buy_pjjcshop_reset_count')
+
+        def buy_kind(self) -> List[str]:
+            return ['记忆碎片']
+
+    async def do_task(self, client: pcrclient):
+        if self.get_config('shop_special_buy_sd'):
+            sd_buyer = self.clanbattle_shop_buyer(self._parent)
+            sd_buyer.config = self.config
+            sd_buyer_result = await sd_buyer.do_from(client)
+            self._log('圣电碎片（会战商店）购买结果：\n' + sd_buyer_result.log)
+            # self.log.extend(sd_buyer.log)
+        self._log("-" * 20)
+        if self.get_config('shop_special_buy_hl'):
+            hl_buyer = self.pjjc_shop_buyer(self._parent)
+            hl_buyer.config = self.config
+            hl_buyer_result = await hl_buyer.do_from(client)
+            self._log('灰狼碎片（pjjc商店）购买结果：\n' + hl_buyer_result.log)
+            # self.log.extend(hl_buyer.log)
