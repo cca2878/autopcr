@@ -1,6 +1,7 @@
 #type: ignore
 from typing import Callable, Iterator, Iterable, Dict, TypeVar, Generic, List, Set, Tuple, Any, Union
 import functools
+from collections import defaultdict
 
 T = TypeVar('T', covariant = True)
 T2 = TypeVar('T2')
@@ -50,11 +51,9 @@ class flow(Iterator[T], Generic[T]):
         return tuple(self.iterable)
 
     def _group_by(self, key_func: Callable[[T], T2]) -> Iterator['groupflow[T, T2]']:
-        groups: Dict[T2, List[T]] = {}
+        groups: Dict[T2, List[T]] = defaultdict(list)
         for item in self.iterable:
             key = key_func(item)
-            if key not in groups:
-                groups[key] = []
             groups[key].append(item)
         for key, value in groups.items():
             yield groupflow(value, key)
@@ -64,13 +63,13 @@ class flow(Iterator[T], Generic[T]):
 
     def max(self, func: Union[Callable[[T], Any], None] = None) -> T:
         if func is None:
-            return max(self.iterable)
-        return max(self.iterable, key=func)
+            return max(self.iterable, default=None)
+        return max(self.iterable, key=func, default=None)
     
     def min(self, func: Union[Callable[[T], Any], None] = None) -> T:
         if func is None:
-            return min(self.iterable)
-        return min(self.iterable, key=func)
+            return min(self.iterable, default=None)
+        return min(self.iterable, key=func, default=None)
     
     def sum(self, func: Callable[[T], T2] = lambda x: x, seed: T2 = 0) -> T2:
         return sum((func(item) for item in self.iterable), start=seed)

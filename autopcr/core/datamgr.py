@@ -326,13 +326,24 @@ class datamgr(Component[apiclient]):
 
     def get_max_quest(self, quests: Dict[int, TrainingQuestDatum], sweep_available = False) -> int:
         now = datetime.datetime.now()
-        return (
-            flow(quests.keys())
-            .where(lambda x: now >= db.parse_time(quests[x].start_time) and 
-                   (not sweep_available or 
-                   (quests[x].quest_id in self.quest_dict and self.quest_dict[x].clear_flg == 3)))
-            .max()
-        )
+        max_quest = None
+        
+        for quest_id, quest_data in quests.items():
+            # Check time constraint first (most likely to filter out items)
+            if now < db.parse_time(quest_data.start_time):
+                continue
+                
+            # Check sweep availability if required
+            if sweep_available:
+                quest_info = self.quest_dict.get(quest_data.quest_id)
+                if not quest_info or quest_info.clear_flg != 3:
+                    continue
+            
+            # Update max quest ID
+            if max_quest is None or quest_id > max_quest:
+                max_quest = quest_id
+        
+        return max_quest if max_quest is not None else 0
 
     def get_max_quest_exp(self, sweep_available = False) -> int:
         return self.get_max_quest(db.training_quest_exp, sweep_available)
@@ -342,12 +353,24 @@ class datamgr(Component[apiclient]):
 
     def get_demand(self, need_point: int, items: List[ItemDatum], need_point_limit: int) -> typing.Counter[ItemType]: # not enough return empty counter
         from ..util.ilp_solver import ilp_solver
-        ub = [self.get_inventory((eInventoryType.Item, item.item_id)) for item in items]
-        effect = [item.value for item in items]
+        
+        # Pre-compute inventory and effect arrays to avoid repeated lookups
+        ub = []
+        effect = []
+        item_types = []
+        
+        for item in items:
+            item_type = (eInventoryType.Item, item.item_id)
+            ub.append(self.get_inventory(item_type))
+            effect.append(item.value)
+            item_types.append(item_type)
+        
         ok, ret = ilp_solver(ub, need_point, need_point_limit, effect)
         if not ok:
             return Counter()
-        return Counter({(eInventoryType.Item, items[i].item_id): ret[i] for i in range(len(items)) if ret[i]})
+        
+        # Only create counter entries for non-zero results
+        return Counter({item_types[i]: ret[i] for i in range(len(item_types)) if ret[i] > 0})
 
     def get_level_up_exp_potion_demand(self, exp_demand: int, exp_demand_limit: int = -1) -> typing.Counter[ItemType]: 
         return self.get_demand(exp_demand, db.exp_potion, exp_demand_limit)
