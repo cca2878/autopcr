@@ -326,13 +326,24 @@ class datamgr(Component[apiclient]):
 
     def get_max_quest(self, quests: Dict[int, TrainingQuestDatum], sweep_available = False) -> int:
         now = datetime.datetime.now()
-        return (
-            flow(quests.keys())
-            .where(lambda x: now >= db.parse_time(quests[x].start_time) and 
-                   (not sweep_available or 
-                   (quests[x].quest_id in self.quest_dict and self.quest_dict[x].clear_flg == 3)))
-            .max()
-        )
+        max_quest = None
+        
+        for quest_id, quest_data in quests.items():
+            # Check time constraint first (most likely to filter out items)
+            if now < db.parse_time(quest_data.start_time):
+                continue
+                
+            # Check sweep availability if required
+            if sweep_available:
+                quest_info = self.quest_dict.get(quest_data.quest_id)
+                if not quest_info or quest_info.clear_flg != 3:
+                    continue
+            
+            # Update max quest ID
+            if max_quest is None or quest_id > max_quest:
+                max_quest = quest_id
+        
+        return max_quest if max_quest is not None else 0
 
     def get_max_quest_exp(self, sweep_available = False) -> int:
         return self.get_max_quest(db.training_quest_exp, sweep_available)

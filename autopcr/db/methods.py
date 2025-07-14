@@ -19,38 +19,55 @@ def method(cls):
 @method
 class EnemyRewardDatum(models.EnemyRewardDatum):
     def get_rewards(self) -> Iterator[Reward]:
-        yield Reward(self.reward_type_1, self.reward_id_1, self.reward_num_1, self.odds_1)
-        yield Reward(self.reward_type_2, self.reward_id_2, self.reward_num_2, self.odds_2)
-        yield Reward(self.reward_type_3, self.reward_id_3, self.reward_num_3, self.odds_3)
-        yield Reward(self.reward_type_4, self.reward_id_4, self.reward_num_4, self.odds_4)
-        yield Reward(self.reward_type_5, self.reward_id_5, self.reward_num_5, self.odds_5)
+        # Pre-compute rewards to avoid creating objects for zero rewards
+        reward_data = [
+            (self.reward_type_1, self.reward_id_1, self.reward_num_1, self.odds_1),
+            (self.reward_type_2, self.reward_id_2, self.reward_num_2, self.odds_2),
+            (self.reward_type_3, self.reward_id_3, self.reward_num_3, self.odds_3),
+            (self.reward_type_4, self.reward_id_4, self.reward_num_4, self.odds_4),
+            (self.reward_type_5, self.reward_id_5, self.reward_num_5, self.odds_5)
+        ]
+        for reward_type, reward_id, reward_num, odds in reward_data:
+            if reward_id != 0 and reward_num != 0:  # Skip empty rewards
+                yield Reward(reward_type, reward_id, reward_num, odds)
 
 @method
 class EquipmentCraft(models.EquipmentCraft):
     def get_materials(self) -> Iterator[Tuple[ItemType, int]]:
-        yield ((eInventoryType.Equip, self.condition_equipment_id_1), self.consume_num_1)
-        yield ((eInventoryType.Equip, self.condition_equipment_id_2), self.consume_num_2)
-        yield ((eInventoryType.Equip, self.condition_equipment_id_3), self.consume_num_3)
-        yield ((eInventoryType.Equip, self.condition_equipment_id_4), self.consume_num_4)
-        yield ((eInventoryType.Equip, self.condition_equipment_id_5), self.consume_num_5)
-        yield ((eInventoryType.Equip, self.condition_equipment_id_6), self.consume_num_6)
-        yield ((eInventoryType.Equip, self.condition_equipment_id_7), self.consume_num_7)
-        yield ((eInventoryType.Equip, self.condition_equipment_id_8), self.consume_num_8)
-        yield ((eInventoryType.Equip, self.condition_equipment_id_9), self.consume_num_9)
-        yield ((eInventoryType.Equip, self.condition_equipment_id_10), self.consume_num_10)
+        # Pre-compute materials to avoid creating tuples for zero materials
+        materials_data = [
+            (self.condition_equipment_id_1, self.consume_num_1),
+            (self.condition_equipment_id_2, self.consume_num_2),
+            (self.condition_equipment_id_3, self.consume_num_3),
+            (self.condition_equipment_id_4, self.consume_num_4),
+            (self.condition_equipment_id_5, self.consume_num_5),
+            (self.condition_equipment_id_6, self.consume_num_6),
+            (self.condition_equipment_id_7, self.consume_num_7),
+            (self.condition_equipment_id_8, self.consume_num_8),
+            (self.condition_equipment_id_9, self.consume_num_9),
+            (self.condition_equipment_id_10, self.consume_num_10)
+        ]
+        for equipment_id, consume_num in materials_data:
+            if equipment_id != 0 and consume_num != 0:  # Skip empty materials
+                yield ((eInventoryType.Equip, equipment_id), consume_num)
 
 @method
 class QuestDatum(models.QuestDatum):
     def get_wave_group_ids(self) -> Iterator[int]:
-        yield self.wave_group_id_1
-        yield self.wave_group_id_2
-        yield self.wave_group_id_3
+        # Return only non-zero wave group IDs
+        wave_groups = [self.wave_group_id_1, self.wave_group_id_2, self.wave_group_id_3]
+        for wave_group_id in wave_groups:
+            if wave_group_id != 0:
+                yield wave_group_id
 
 @method
 class WaveGroupDatum(models.WaveGroupDatum):
     def get_drop_reward_ids(self) -> Iterator[int]:
-        yield self.drop_reward_id_1
-        yield self.drop_reward_id_2
-        yield self.drop_reward_id_3
-        yield self.drop_reward_id_4
-        yield self.drop_reward_id_5
+        # Return only non-zero drop reward IDs
+        drop_rewards = [
+            self.drop_reward_id_1, self.drop_reward_id_2, self.drop_reward_id_3,
+            self.drop_reward_id_4, self.drop_reward_id_5
+        ]
+        for drop_reward_id in drop_rewards:
+            if drop_reward_id != 0:
+                yield drop_reward_id

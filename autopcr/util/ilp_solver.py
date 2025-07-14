@@ -18,10 +18,6 @@ def ilp_solver(ub: List[int], target: int, limit: int, effect: List[int]) -> Tup
     prob.solve(PULP_CBC_CMD(msg=False))
     result = {v.name: int(v.varValue) for v in prob.variables()}
     ret = [result[str(effect[i])] for i in range(n)]
-    print(LpStatus[prob.status])
-    print(ret)
-    print(effect)
-    print(target, limit, value(prob.objective))
     return prob.status == LpStatusOptimal, ret
 
 if __name__ == '__main__':

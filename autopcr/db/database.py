@@ -5,7 +5,7 @@ from ..model.enums import eCampaignCategory
 from ..model.common import eInventoryType, RoomUserItem, InventoryInfo
 from ..model.custom import ItemType
 import datetime
-from collections import Counter
+from collections import Counter, defaultdict
 from .dbmgr import dbmgr
 from .methods import *
 from .models import *
@@ -56,20 +56,32 @@ class database():
                 .to_dict(lambda x: x.drop_reward_id, lambda x: x)
             )
 
-            self.normal_quest_rewards: Dict[int, typing.Counter[ItemType]] = (
-                flow(self.normal_quest_data.values())
-                .to_dict(lambda x: x.quest_id, lambda x:
-                    flow(x.get_wave_group_ids())
-                    .where(lambda y: y != 0)
-                    .select_many(lambda y: self.wave_groups[y].get_drop_reward_ids())
-                    .where(lambda y: y != 0)
-                    .select_many(lambda y: self.reward_groups[y].get_rewards())
-                    .where(lambda y: y != 0 and y.reward_item[0] == eInventoryType.Equip)
-                    .select(lambda y: Counter({y.reward_item: y.reward_num * y.odds / 100.0}))
-                    .sum(seed=Counter()) + 
-                    extra_drops.get(x.quest_id // 1000, Counter())
-                )
-            )
+            # Optimized version to reduce nested iterations and lookups
+            self.normal_quest_rewards: Dict[int, typing.Counter[ItemType]] = {}
+            for quest in self.normal_quest_data.values():
+                quest_counter = Counter()
+                
+                # Pre-filter wave group IDs to avoid zero checks in inner loops
+                wave_group_ids = [wg_id for wg_id in quest.get_wave_group_ids() if wg_id != 0]
+                
+                for wave_group_id in wave_group_ids:
+                    if wave_group_id not in self.wave_groups:
+                        continue
+                        
+                    # Pre-filter drop reward IDs
+                    drop_reward_ids = [dr_id for dr_id in self.wave_groups[wave_group_id].get_drop_reward_ids() if dr_id != 0]
+                    
+                    for drop_reward_id in drop_reward_ids:
+                        if drop_reward_id not in self.reward_groups:
+                            continue
+                            
+                        for reward in self.reward_groups[drop_reward_id].get_rewards():
+                            if reward != 0 and reward.reward_item[0] == eInventoryType.Equip:
+                                quest_counter[reward.reward_item] += reward.reward_num * reward.odds / 100.0
+                
+                # Add extra drops
+                quest_counter.update(extra_drops.get(quest.quest_id // 1000, Counter()))
+                self.normal_quest_rewards[quest.quest_id] = quest_counter
             
             self.unique_equip_rank: Dict[int, UniqueEquipmentEnhanceDatum] = ( # 第二维是int？
                 UniqueEquipmentEnhanceDatum.query(db)
@@ -190,34 +202,33 @@ class database():
                 .to_dict(lambda x: x.unit_id, lambda x: x)
             )
             
-            self.rarity_up_required: Dict[int, Dict[int, typing.Counter[ItemType]]] = (
-                UnitRarity.query(db)
-                .select(lambda x: (
-                    x.unit_id,
-                    x.rarity,
-                    (eInventoryType(eInventoryType.Item), x.unit_material_id),
-                    x.consume_num
-                ))
-                .concat(
-                    UnlockRarity6.query(db)
-                    .group_by(lambda x: (x.unit_id, (eInventoryType(eInventoryType.Item), x.material_id))) # 感觉有点奇怪，别问，问就是Itemtype != MaterialType
-                    .select(lambda x: (
-                        x.key[0],
-                        6,
-                        x.key[1],
-                        x.sum(lambda y: y.material_count)
-                    )
-                ))
-                .group_by(lambda x: x[0])
-                .to_dict(lambda x: x.key, lambda x:
-                    x.group_by(lambda y: y[1])
-                    .to_dict(lambda y: y.key, lambda y:
-                        Counter(y.group_by(lambda z: z[2])
-                        .to_dict(lambda z: z.key, lambda z: z.sum(lambda w: w[3]))
-                        )
-                    )
-                )
-            )
+            # Optimized rarity_up_required calculation to avoid complex nested operations
+            self.rarity_up_required: Dict[int, Dict[int, typing.Counter[ItemType]]] = defaultdict(lambda: defaultdict(Counter))
+            
+            # Process UnitRarity data
+            for unit_rarity in UnitRarity.query(db):
+                unit_id = unit_rarity.unit_id
+                rarity = unit_rarity.rarity
+                item_key = (eInventoryType(eInventoryType.Item), unit_rarity.unit_material_id)
+                self.rarity_up_required[unit_id][rarity][item_key] = unit_rarity.consume_num
+            
+            # Process UnlockRarity6 data with grouping optimization
+            unlock_rarity6_data = defaultdict(lambda: defaultdict(int))
+            for unlock_item in UnlockRarity6.query(db):
+                key = (unlock_item.unit_id, (eInventoryType(eInventoryType.Item), unlock_item.material_id))
+                unlock_rarity6_data[key[0]][key[1]] += unlock_item.material_count
+            
+            # Add the grouped UnlockRarity6 data to rarity_up_required
+            for unit_id, materials in unlock_rarity6_data.items():
+                for material_key, count in materials.items():
+                    self.rarity_up_required[unit_id][6][material_key] = count
+            
+            # Convert defaultdicts to regular dicts for consistency
+            self.rarity_up_required = {
+                unit_id: {
+                    rarity: Counter(counter) for rarity, counter in rarities.items()
+                } for unit_id, rarities in self.rarity_up_required.items()
+            }
 
             self.unique_equip_required: Dict[int, Dict[int, typing.Counter[ItemType]]] = (
                 UniqueEquipmentCraft.query(db)
