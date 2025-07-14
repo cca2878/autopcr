@@ -353,12 +353,24 @@ class datamgr(Component[apiclient]):
 
     def get_demand(self, need_point: int, items: List[ItemDatum], need_point_limit: int) -> typing.Counter[ItemType]: # not enough return empty counter
         from ..util.ilp_solver import ilp_solver
-        ub = [self.get_inventory((eInventoryType.Item, item.item_id)) for item in items]
-        effect = [item.value for item in items]
+        
+        # Pre-compute inventory and effect arrays to avoid repeated lookups
+        ub = []
+        effect = []
+        item_types = []
+        
+        for item in items:
+            item_type = (eInventoryType.Item, item.item_id)
+            ub.append(self.get_inventory(item_type))
+            effect.append(item.value)
+            item_types.append(item_type)
+        
         ok, ret = ilp_solver(ub, need_point, need_point_limit, effect)
         if not ok:
             return Counter()
-        return Counter({(eInventoryType.Item, items[i].item_id): ret[i] for i in range(len(items)) if ret[i]})
+        
+        # Only create counter entries for non-zero results
+        return Counter({item_types[i]: ret[i] for i in range(len(item_types)) if ret[i] > 0})
 
     def get_level_up_exp_potion_demand(self, exp_demand: int, exp_demand_limit: int = -1) -> typing.Counter[ItemType]: 
         return self.get_demand(exp_demand, db.exp_potion, exp_demand_limit)

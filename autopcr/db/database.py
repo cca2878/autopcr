@@ -230,54 +230,55 @@ class database():
                 } for unit_id, rarities in self.rarity_up_required.items()
             }
 
-            self.unique_equip_required: Dict[int, Dict[int, typing.Counter[ItemType]]] = (
-                UniqueEquipmentCraft.query(db)
-                .select_many(lambda x: [(
-                    x.equip_id,
-                    int(0),
-                    eInventoryType(x.reward_type_1),
-                    x.item_id_1,
-                    x.consume_num_1
-                ), (
-                    x.equip_id,
-                    0,
-                    eInventoryType(x.reward_type_2),
-                    x.item_id_2,
-                    x.consume_num_2
-                )])
-                .concat(
-                    UniqueEquipmentRankup.query(db)
-                    .select_many(lambda x: [(
-                        x.equip_id,
-                        x.unique_equip_rank,
-                        eInventoryType(x.reward_type_1),
-                        x.item_id_1,
-                        x.consume_num_1
-                    ), (
-                        x.equip_id,
-                        x.unique_equip_rank,
-                        eInventoryType(x.reward_type_2),
-                        x.item_id_2,
-                        x.consume_num_2
-                    )])
-                )
-                .select(lambda x: (
-                    x[0],
-                    x[1],
-                    self.xinsui[0],
-                    self.xinsui[1],
-                    x[4] * 10
-                ) if (x[2], x[3]) == self.heart else x)
-                .group_by(lambda x: x[0])
-                .to_dict(lambda x: x.key, lambda x:
-                    x.group_by(lambda y: y[1])
-                    .to_dict(lambda y: y.key, lambda y:
-                        Counter(y.group_by(lambda z: (z[2], z[3]))
-                        .to_dict(lambda z: z.key, lambda z: z.sum(lambda w: w[4]))
-                        )
-                    )
-                )
-            )
+            # Optimized unique_equip_required calculation
+            self.unique_equip_required: Dict[int, Dict[int, typing.Counter[ItemType]]] = defaultdict(lambda: defaultdict(Counter))
+            
+            # Process UniqueEquipmentCraft data
+            for craft_item in UniqueEquipmentCraft.query(db):
+                equip_id = craft_item.equip_id
+                rank = 0  # UniqueEquipmentCraft uses rank 0
+                
+                materials = [
+                    (eInventoryType(craft_item.reward_type_1), craft_item.item_id_1, craft_item.consume_num_1),
+                    (eInventoryType(craft_item.reward_type_2), craft_item.item_id_2, craft_item.consume_num_2)
+                ]
+                
+                for reward_type, item_id, consume_num in materials:
+                    if item_id != 0 and consume_num != 0:
+                        if (reward_type, item_id) == self.heart:
+                            material_key = self.xinsui
+                            actual_consume = consume_num * 10
+                        else:
+                            material_key = (reward_type, item_id)
+                            actual_consume = consume_num
+                        self.unique_equip_required[equip_id][rank][material_key] += actual_consume
+            
+            # Process UniqueEquipmentRankup data
+            for rankup_item in UniqueEquipmentRankup.query(db):
+                equip_id = rankup_item.equip_id
+                rank = rankup_item.unique_equip_rank
+                
+                materials = [
+                    (eInventoryType(rankup_item.reward_type_1), rankup_item.item_id_1, rankup_item.consume_num_1),
+                    (eInventoryType(rankup_item.reward_type_2), rankup_item.item_id_2, rankup_item.consume_num_2)
+                ]
+                
+                for reward_type, item_id, consume_num in materials:
+                    if item_id != 0 and consume_num != 0:
+                        if (reward_type, item_id) == self.heart:
+                            material_key = self.xinsui
+                            actual_consume = consume_num * 10
+                        else:
+                            material_key = (reward_type, item_id)
+                            actual_consume = consume_num
+                        self.unique_equip_required[equip_id][rank][material_key] += actual_consume
+            
+            # Convert defaultdicts to regular dicts for consistency
+            self.unique_equip_required = {
+                equip_id: {
+                    rank: Counter(counter) for rank, counter in ranks.items()
+                } for equip_id, ranks in self.unique_equip_required.items()
+            }
 
             self.dungeon_area: Dict[int, DungeonArea] = (
                 DungeonArea.query(db)
