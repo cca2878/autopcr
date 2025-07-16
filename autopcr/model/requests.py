@@ -1,9 +1,12 @@
-from typing import List
+from typing import List, TYPE_CHECKING
 from .modelbase import Request
-from .responses import *
 from .common import *
 from .enums import *
 from pydantic import Field
+
+# Use TYPE_CHECKING to break circular dependency while keeping type hints
+if TYPE_CHECKING:
+    from .responses import *
 
 class AcceptAgreementRequest(Request[AcceptAgreementResponse]):
     agreement_type: int = None
