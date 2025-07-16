@@ -1,10 +1,75 @@
-from ..model.models import *
+from ..model.models import (
+    # Arena related requests
+    ArenaApplyRequest, ArenaHistoryDetailRequest, ArenaHistoryRequest, ArenaInfoRequest, 
+    ArenaRankingRequest, ArenaStartRequest, ArenaTimeRewardAcceptRequest,
+    GrandArenaApplyRequest, GrandArenaHistoryDetailRequest, GrandArenaHistoryRequest, 
+    GrandArenaInfoRequest, GrandArenaRankingRequest, GrandArenaStartRequest, GrandArenaTimeRewardAcceptRequest,
+    
+    # Clan related requests  
+    ClanBattleSupportUnitList2Request, ClanBattleTopRequest, ClanChatInfoListRequest,
+    ClanCreateRequest, ClanInfoRequest, ClanInviteRequest, ClanJoinRequest, ClanLikeRequest, ClanRemoveRequest,
+    
+    # Quest and battle requests
+    QuestStartRequest, QuestFinishRequest, QuestSkipRequest, QuestRecoverChallengeRequest,
+    DungeonBattleStartRequest, DungeonBattleRetireRequest, DungeonSkipRequest, DungeonInfoRequest,
+    DungeonEnterAreaRequest, DungeonResetRequest, DungeonDispatchUnitList2Request,
+    
+    # Equipment and enhancement
+    EquipDonateRequest, EquipEnhanceRequest, EquipGetRequestRequest, EquipRequestRequest,
+    EquipmentFreeEnhanceRequest, UnitCraftEquipRequest, UnitFreeEquipRequest,
+    
+    # Gacha requests
+    GachaExecRequest, GachaIndexRequest, GachaSelectPrizeRequest,
+    EventGachaExecRequest, EventGachaIndexRequest, EventGachaResetRequest,
+    
+    # Season pass and missions
+    SeasonPassIndexRequest, SeasonPassRewardAcceptRequest, SeasonPassMissionAcceptRequest,
+    MissionAcceptRequest, MissionIndexRequest,
+    
+    # Unit management
+    ChangeRarityRequest, UnitMultiPromotionRequest, UnitFreeLevelUpRequest, 
+    UnitFreePromotionRequest, SkillLevelUpRequest, UseExpItemRequest,
+    
+    # Shop and inventory
+    ShopBuyMultipleRequest, ShopItemListRequest, ShopRecoverStaminaRequest, 
+    ShopResetRequest, ShopWithdrawGoldFromBankRequest, PresentReceiveAllRequest, PresentIndexRequest,
+    
+    # UI and system
+    DeckUpdateRequest, DeckUpdateListRequest, HomeIndexRequest, LoadIndexRequest, 
+    ToolTipConfirmRequest, ProfileGetRequest,
+    
+    # Event specific
+    HatsuneBossBattleSkipRequest, HatsuneDearFinishRequest, HatsuneDearTopRequest,
+    HatsuneMissionAcceptRequest, HatsuneMissionIndexRequest, HatsuneQuestSkipRequest,
+    HatsuneQuestTopRequest, HatsuneTopRequest,
+    
+    # Story and special content
+    StoryMaintenanceCheckRequest, StoryViewingRequest, SubStoryLtoReadStoryRequest,
+    SubStoryMhpReadStoryRequest, SubStoryNopReadStoryRequest, SubStorySkeConfirmRequest,
+    SubStorySkeReadStoryRequest, SubStorySspReadSspStoryRequest, SubStorySvdReadStoryRequest,
+    SubStoryYsnReadStoryRequest,
+    
+    # Room and social
+    RoomLevelUpStartRequest, RoomLikeHistoryRequest, RoomLikeRequest, 
+    RoomMultiGiveGiftRequest, RoomReceiveItemAllRequest, RoomStartRequest, RoomVisitRequest,
+    
+    # Special content  
+    CloisterBattleSkipRequest, TowerTopRequest, TrainingQuestSkipRequest,
+    SpecialDungeonEnterAreaRequest, SpecialDungeonResetRequest, SpecialDungeonTopRequest,
+    ShioriQuestSkipRequest, RaceLoginBonusCharaSelectDataRequest,
+    
+    # Psy content
+    PsyGetPuddingRequest, PsyReadDramaRequest, PsyStartCookingRequest, PsyTopRequest,
+    
+    # Misc
+    UserInviteClanListRequest, Request
+)
 from .apiclient import apiclient
 from .sessionmgr import sessionmgr
 from .misc import errorhandler
 from .datamgr import datamgr
 from ..db.database import db
-from typing import Tuple, Union
+from typing import Tuple, Union, List
 import typing
 
 class pcrclient(apiclient):

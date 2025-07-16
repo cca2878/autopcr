@@ -1,10 +1,13 @@
 import os
+from .config import get_config
 
-ROOT_DIR = os.path.join(os.path.dirname(__file__), '..')
-CACHE_DIR = os.path.join(ROOT_DIR, './cache/')
-RESULT_DIR = os.path.join(ROOT_DIR, './result/')
-DATA_DIR = os.path.join(ROOT_DIR, './data/')
-CONFIG_PATH = os.path.join(CACHE_DIR, './http_server/') 
+# Use centralized configuration instead of hardcoded paths
+_config = get_config()
+ROOT_DIR = _config.root_dir
+CACHE_DIR = _config.cache_dir
+RESULT_DIR = _config.result_dir
+DATA_DIR = _config.data_dir
+CONFIG_PATH = os.path.join(CACHE_DIR, 'http_server/') 
 OLD_CONFIG_PATH = os.path.join(ROOT_DIR, 'autopcr/http_server/config')
 AUTH_KEY = ""
 
